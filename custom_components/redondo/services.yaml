@@ -1,0 +1,35 @@
+notify:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: redondo
+    kind:
+      required: true
+      example: deal
+      selector:
+        text:
+    urgent:
+      required: true
+      default: false
+      selector:
+        boolean:
+    seconds:
+      required: true
+      default: 30
+      selector:
+        number:
+          min: 1
+          mode: box
+          unit_of_measurement: s
+    title:
+      required: true
+      example: SSD NVMe 2 TB
+      selector:
+        text:
+    body:
+      example: R$ 599, 32% below the asking price
+      selector:
+        text:
+          multiline: true

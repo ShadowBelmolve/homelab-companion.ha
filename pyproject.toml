@@ -1,0 +1,18 @@
+[project]
+name = "redondo-ha"
+version = "0.0.1"
+description = "Home Assistant integration for the Redondo Companion."
+requires-python = ">=3.14.2"
+
+[dependency-groups]
+# Pins homeassistant itself: the plugin tracks one exact release.
+dev = ["pytest-homeassistant-custom-component==0.13.375"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

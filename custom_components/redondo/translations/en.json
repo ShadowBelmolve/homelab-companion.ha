@@ -1,0 +1,49 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Redondo Companion",
+        "description": "Home Assistant connects to the Companion, which listens on TCP port 7010.",
+        "data": {
+          "host": "Host",
+          "port": "Port"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This Companion is already configured."
+    }
+  },
+  "services": {
+    "notify": {
+      "name": "Notify",
+      "description": "Shows a notification on the Companion. Fails when it is not connected.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Companion",
+          "description": "The Companion that shows it."
+        },
+        "kind": {
+          "name": "Kind",
+          "description": "Picks the screen: email, urgent-email, deal. Any other kind shows as text only."
+        },
+        "urgent": {
+          "name": "Urgent",
+          "description": "Urgent notifications show before the others and take the screen from them."
+        },
+        "seconds": {
+          "name": "Seconds",
+          "description": "The most it stays on screen."
+        },
+        "title": {
+          "name": "Title",
+          "description": "One line. For the kind email, the number of unread messages."
+        },
+        "body": {
+          "name": "Body",
+          "description": "Up to three lines; may be empty."
+        }
+      }
+    }
+  }
+}
