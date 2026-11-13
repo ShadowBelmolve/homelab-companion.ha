@@ -84,3 +84,23 @@ The container dials out, so nothing of the Companion needs publishing. `up` prin
 4. Close the simulator: the sensor turns off. `uv run scripts/ha_dev.py down` when done.
 
 Run on 2026-11-13 with Home Assistant 2026.10.4: the sensor turned on, an `urgent-email` notification showed in the simulator, the sensor turned off when the simulator closed.
+
+### Home Assistant OS in a virtual machine
+
+`scripts/haos_vm.py` boots a fresh Home Assistant OS in QEMU/KVM and installs the integration the way it is installed on a real one: the folder copied into `/config/custom_components`. It needs `qemu-system-x86 qemu-utils ovmf xz-utils`, `/dev/kvm` and `sudo` (for `nft`).
+
+```bash
+uv run scripts/haos_vm.py start     # downloads HAOS once, boots, waits for Home Assistant
+uv run scripts/haos_vm.py install   # copies the integration in, restarts Core, onboards, adds the Companion
+uv run scripts/haos_vm.py token     # an access token for the REST API
+uv run scripts/haos_vm.py stop      # stops the VM; its disk stays and `start` boots it again
+uv run scripts/haos_vm.py destroy   # stops it and deletes ~/vms/redondo-ha
+```
+
+- The VM is the user unit `redondo-haos-vm` (2 vCPUs, 3 GiB), its files in `~/vms/redondo-ha`. UI: `http://<this host>:18180` (user `dev`, password `dev` after `install`); 18223 is the legacy port 8123. The first boot downloads Home Assistant Core: 5 to 10 minutes.
+- The guest sees this PC as `10.0.2.2`. `install` adds the Companion at `10.0.2.2:7010`, the simulator (`make sim APP=companion` in the firmware repo); `--companion-port` picks another port. Run `install` again after editing the integration.
+- The guest cannot reach the LAN: the nftables table `inet redondo_haos_vm` drops what the VM sends to private networks, so this Home Assistant never talks to real devices, a real board included. `stop` removes the table.
+- `install` types the integration into the guest's serial console (root, no password) as a base64 tar. To look around by hand: `socat - UNIX-CONNECT:$HOME/vms/redondo-ha/serial.sock`; the console's output is also in `~/vms/redondo-ha/serial.log`.
+- The image is the newest stable HAOS release that has one for virtual machines (`haos_ova-*.qcow2.xz`); a release can lack it, as 18.5 did.
+- Run on 2026-11-13 with HAOS 18.4 and the simulator: `start`, `install`, the sensor `binary_sensor.10_0_2_2_connectivity` turned on, a `redondo.notify` call showed in the simulator, the sensor turned off when the simulator closed.
+- Cut down from the homelab `haos` repo's `scripts/start-vm.sh`, with its own unit, ports and table, so both VMs can run at once.
