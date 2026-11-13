@@ -97,10 +97,13 @@ uv run scripts/haos_vm.py stop      # stops the VM; its disk stays and `start` b
 uv run scripts/haos_vm.py destroy   # stops it and deletes ~/vms/redondo-ha
 ```
 
-- The VM is the user unit `redondo-haos-vm` (2 vCPUs, 3 GiB), its files in `~/vms/redondo-ha`. UI: `http://<this host>:18180` (user `dev`, password `dev` after `install`); 18223 is the legacy port 8123. The first boot downloads Home Assistant Core: 5 to 10 minutes.
+- The VM is the user unit `redondo-haos-vm` (2 vCPUs, 4 GiB), its files in `~/vms/redondo-ha`. UI: `http://<this host>:18180` (user `dev`, password `dev` after `install`); 18223 is the legacy port 8123. The first boot downloads Home Assistant Core: 5 to 10 minutes.
 - The guest sees this PC as `10.0.2.2`. `install` adds the Companion at `10.0.2.2:7010`, the simulator (`make sim APP=companion` in the firmware repo); `--companion-port` picks another port. Run `install` again after editing the integration.
-- The guest cannot reach the LAN: the nftables table `inet redondo_haos_vm` drops what the VM sends to private networks, so this Home Assistant never talks to real devices, a real board included. `stop` removes the table.
+- The guest cannot reach the LAN: the nftables table `inet redondo_haos_vm` drops what the VM sends to private networks, so this Home Assistant never talks to real devices. `stop` removes the table.
+- A real board: pass its IPv4 address to both commands, `start --companion <ipv4>` (opens the block for that address and the Companion's port only; on a running VM it just reloads the rule) and `install --companion <ipv4>` (adds it). A plain `start` leaves the rule as it is; `start --companion 10.0.2.2` closes it again. A name such as `redondo.local` does not resolve in the guest and is refused.
+- `install` retries `ha core restart` for up to two minutes: right after a boot the Supervisor refuses it.
 - `install` types the integration into the guest's serial console (root, no password) as a base64 tar. To look around by hand: `socat - UNIX-CONNECT:$HOME/vms/redondo-ha/serial.sock`; the console's output is also in `~/vms/redondo-ha/serial.log`.
 - The image is the newest stable HAOS release that has one for virtual machines (`haos_ova-*.qcow2.xz`); a release can lack it, as 18.5 did.
 - Run on 2026-11-13 with HAOS 18.4 and the simulator: `start`, `install`, the sensor `binary_sensor.10_0_2_2_connectivity` turned on, a `redondo.notify` call showed in the simulator, the sensor turned off when the simulator closed.
+- Run on 2026-11-13 with a real board (the `companion` firmware sent with `make ota`): the connectivity sensor turned on and a `redondo.notify` call returned 200; what the screen showed was not recorded.
 - Cut down from the homelab `haos` repo's `scripts/start-vm.sh`, with its own unit, ports and table, so both VMs can run at once.

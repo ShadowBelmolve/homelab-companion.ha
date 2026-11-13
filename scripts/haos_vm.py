@@ -13,13 +13,17 @@ xz-utils, /dev/kvm and sudo (for nft).
 
 The guest sees this PC as 10.0.2.2 (QEMU user networking), which is where it
 finds a Companion simulator (`make sim APP=companion` in the firmware repo).
-The LAN is blocked for the guest, so it cannot reach a real board.
+The LAN is blocked for the guest; for a real board, pass its address to both
+`start` and `install` with `--companion IPV4` (a name like redondo.local does
+not resolve in the guest).
 """
 
 import argparse
 import base64
 import io
+import ipaddress
 import json
+import os
 import re
 import shutil
 import socket
@@ -71,9 +75,38 @@ def running() -> bool:
     return subprocess.run(["systemctl", "--user", "is-active", "--quiet", UNIT]).returncode == 0
 
 
-def start():
+def cgroup() -> Path:
+    uid = os.getuid()
+    return Path(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/{UNIT}")
+
+
+def block_lan(companion: str, port: int) -> None:
+    """Drop what the guest sends to private networks, except to a Companion's port there."""
+    # The guest's traffic leaves from the qemu process: match its cgroup,
+    # which must exist before the rule loads. Home Assistant in the VM never
+    # talks to real devices, apart from the one Companion it is pointed at.
+    private = "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 224.0.0.0/4"
+    match = f'socket cgroupv2 level 5 "{cgroup().relative_to("/sys/fs/cgroup")}"'
+    hole = "" if companion == HOST_FROM_GUEST else f"    {match} ip daddr {companion} tcp dport {port} accept\n"
+    rules = f"""table inet {TABLE}
+delete table inet {TABLE}
+table inet {TABLE} {{
+  chain output {{
+    type filter hook output priority 0; policy accept;
+{hole}    {match} ip daddr {{ {private} }} ct state new counter drop
+  }}
+}}
+"""
+    run("sudo", "nft", "-f", "-", input=rules, text=True)
+
+
+def start(companion: str | None, port: int):
     download()
-    if not running():
+    if running():
+        # Only when asked: a plain `start` must not close the way to a board.
+        if companion:
+            block_lan(companion, port)
+    else:
         # A socket left by a qemu that was killed is not this one's.
         (DIR / "monitor.sock").unlink(missing_ok=True)
         forwards = f"hostfwd=tcp:0.0.0.0:{UI_PORT}-:80,hostfwd=tcp:0.0.0.0:{LEGACY_PORT}-:8123"
@@ -81,7 +114,7 @@ def start():
         run(
             "systemd-run", "--user", f"--unit={UNIT}", "--collect", "--",
             # -S: paused until the LAN block below is loaded.
-            "qemu-system-x86_64", "-S", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "2", "-m", "3072",
+            "qemu-system-x86_64", "-S", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "2", "-m", "4096",
             "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
             "-drive", f"if=pflash,format=raw,file={DIR}/vars.fd",
             "-drive", f"file={DIR}/haos.qcow2,if=virtio,format=qcow2",
@@ -91,26 +124,11 @@ def start():
         )
         # fmt: on
         try:
-            # The guest's traffic leaves from the qemu process: match its cgroup
-            # (it must exist before the rule loads) and drop what goes to private
-            # networks, so Home Assistant in the VM never talks to real devices.
-            uid = run("id", "-u", capture_output=True, text=True).stdout.strip()
-            cgroup = f"user.slice/user-{uid}.slice/user@{uid}.service/app.slice/{UNIT}"
-            while not (Path("/sys/fs/cgroup") / cgroup).is_dir() or not (DIR / "monitor.sock").is_socket():
+            while not cgroup().is_dir() or not (DIR / "monitor.sock").is_socket():
                 if not running():
                     sys.exit(f"qemu exited, see: journalctl --user -u {UNIT}")
                 time.sleep(0.2)
-            private = "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 224.0.0.0/4"
-            rules = f"""table inet {TABLE}
-delete table inet {TABLE}
-table inet {TABLE} {{
-  chain output {{
-    type filter hook output priority 0; policy accept;
-    socket cgroupv2 level 5 "{cgroup}" ip daddr {{ {private} }} ct state new counter drop
-  }}
-}}
-"""
-            run("sudo", "nft", "-f", "-", input=rules, text=True)
+            block_lan(companion or HOST_FROM_GUEST, port)
             run("socat", "-", f"UNIX-CONNECT:{DIR}/monitor.sock", input="cont\n", text=True, stdout=subprocess.DEVNULL)
         except BaseException:
             # Nothing paused left behind: the next `start` would wait for it.
@@ -148,7 +166,8 @@ def guest(commands: list[str], timeout: float = 600) -> None:
                 raise RuntimeError(f"in the guest: {command[:60]!r} failed:\n{seen.decode(errors='replace')[-600:]}")
 
 
-def install(companion_port: int):
+def install(companion: str | None, companion_port: int):
+    companion = companion or HOST_FROM_GUEST
     # A tar of the integration, typed into the console as base64: the guest
     # needs no network path to this PC and no extra tool. gzip's checksum
     # makes the extraction fail if the console dropped a byte.
@@ -161,7 +180,8 @@ def install(companion_port: int):
         [
             f"cat > /tmp/redondo.b64 <<'END'\n{text}END\ntrue",
             f"rm -rf {target}/redondo && mkdir -p {target} && base64 -d /tmp/redondo.b64 | tar -xz -C {target}",
-            "ha core restart",
+            # Right after a boot the Supervisor refuses it: up to two minutes of tries.
+            "n=0; until ha core restart || [ $((n+=1)) -ge 12 ]; do sleep 10; done; [ $n -lt 12 ]",
         ]
     )
     ha_dev.wait_ready(BASE, timeout=600, interval=5)
@@ -171,14 +191,14 @@ def install(companion_port: int):
     for tries_left in reversed(range(6)):
         try:
             token = ha_dev.onboard_and_login(BASE)
-            result = ha_dev.add_config_entry(BASE, token, "redondo", {"host": HOST_FROM_GUEST, "port": companion_port})
+            result = ha_dev.add_config_entry(BASE, token, "redondo", {"host": companion, "port": companion_port})
             break
         except OSError:
             if not tries_left:
                 raise
             time.sleep(10)
     added = "added" if result["type"] == "create_entry" else f"not added ({result.get('reason', result['type'])})"
-    print(f"integration installed; Companion {HOST_FROM_GUEST}:{companion_port} {added}")
+    print(f"integration installed; Companion {companion}:{companion_port} {added}")
     print(f"http://<this host>:{UI_PORT} (user dev / password dev)")
 
 
@@ -190,12 +210,19 @@ def stop():
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["start", "install", "token", "stop", "destroy"])
-    p.add_argument("--companion-port", type=int, default=7010, help="install: the Companion's port on this PC")
+    p.add_argument(
+        "--companion",
+        type=lambda text: str(ipaddress.IPv4Address(text)),
+        metavar="IPV4",
+        help="start, install: a Companion on the LAN (a real board) instead of the simulator on this PC; `start` "
+        f"opens the LAN block for that address and port only ({HOST_FROM_GUEST} closes it again), `install` adds it",
+    )
+    p.add_argument("--companion-port", type=int, default=7010, help="start, install: the Companion's port")
     a = p.parse_args(argv)
     if a.command == "start":
-        start()
+        start(a.companion, a.companion_port)
     elif a.command == "install":
-        install(a.companion_port)
+        install(a.companion, a.companion_port)
     elif a.command == "token":
         print(ha_dev.login(BASE))
     else:
