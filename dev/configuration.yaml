@@ -1,0 +1,7 @@
+# Config of the dev container started by scripts/ha_dev.py (mounted read-only).
+default_config:
+
+logger:
+  default: warning
+  logs:
+    custom_components: debug

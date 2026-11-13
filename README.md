@@ -59,3 +59,28 @@ docker run --rm -v "$PWD":/github/workspace ghcr.io/home-assistant/hassfest
 - `tests/components/conftest.py` imports `custom_components` first; without it Home Assistant loads the plugin's own `custom_components` and reports `Integration 'redondo' not found`.
 - hassfest must end with `Invalid integrations: 0`.
 - Without Home Assistant, the firmware repo's `tools/notify.py` sends lines to a Companion or to its simulator.
+
+### A real Home Assistant in Docker
+
+`scripts/ha_dev.py` (copied from the homelab `haos` repo) runs Home Assistant Core in a container, with `custom_components/` mounted read-only and the image of the Home Assistant version in the venv, the one pytest uses.
+
+```bash
+uv run scripts/ha_dev.py up        # container redondo-ha-dev, http://<this host>:28133, user dev / password dev
+uv run scripts/ha_dev.py restart   # after editing the integration (Python loads once)
+uv run scripts/ha_dev.py logs      # dev/configuration.yaml turns debug logs on for custom_components
+uv run scripts/ha_dev.py token     # an access token for the REST API
+uv run scripts/ha_dev.py down      # removes the container and its config volume
+```
+
+`uv run pytest -m live` is the automated check (about 30 s; the default `pytest` run skips it): a separate container `redondo-ha-live-test` on port 28134, the config flow through the REST API, a TCP server on this PC as the Companion, the sensor `on`, a `redondo.notify` call and the exact line received; the container is removed afterwards.
+
+### With the Companion's simulator
+
+The container dials out, so nothing of the Companion needs publishing. `up` prints the address this PC has from inside the container (the Docker bridge gateway, usually `172.17.0.1`).
+
+1. In the firmware repo: `make sim APP=companion`. The simulator listens on port 7010; its eyes are tired while nobody is connected.
+2. `uv run scripts/ha_dev.py up`, open the URL, add the integration Redondo Companion with the host `up` printed and port 7010. The eyes wake up and `binary_sensor.<host>_connectivity` turns on.
+3. Developer tools → Actions → `redondo.notify`: pick the Companion, fill the fields, perform. The notification shows in the simulator.
+4. Close the simulator: the sensor turns off. `uv run scripts/ha_dev.py down` when done.
+
+Run on 2026-11-13 with Home Assistant 2026.10.4: the sensor turned on, an `urgent-email` notification showed in the simulator, the sensor turned off when the simulator closed.

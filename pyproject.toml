@@ -16,3 +16,5 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = ["live: starts a real Home Assistant container (slow, needs docker)"]
+addopts = "-m 'not live'"
