@@ -5,6 +5,7 @@ import logging
 import socket
 
 import voluptuous as vol
+from homeassistant.components import zeroconf
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -12,6 +13,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.typing import ConfigType
+from zeroconf import AddressResolver, IPVersion
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ PLATFORMS = [Platform.BINARY_SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 CONNECT_TIMEOUT = 10
+MDNS_TIMEOUT_MS = 3000
 RETRY_SECONDS = 5
 # Kernel keepalive: a Companion that vanished without closing is noticed
 # within idle + interval * probes = 30 s. It needs no heartbeat line.
@@ -59,12 +62,24 @@ class Link:
         self.writer = writer
         async_dispatcher_send(self.hass, signal(self.entry.entry_id))
 
+    async def _address(self, host: str) -> str:
+        """A `.local` name's IPv4 address by Home Assistant's own mDNS; any other host as it is."""
+        # Home Assistant's container has no mDNS in its system resolver. Asked
+        # at every try, so a Companion whose address changed is found again.
+        name = host.rstrip(".").lower()
+        if name.endswith(".local"):
+            resolver = AddressResolver(f"{name}.")
+            if await resolver.async_request(await zeroconf.async_get_instance(self.hass), MDNS_TIMEOUT_MS):
+                if found := resolver.ip_addresses_by_version(IPVersion.V4Only):
+                    return str(found[0])
+        return host
+
     async def run(self) -> None:
         host, port = self.entry.data[CONF_HOST], self.entry.data[CONF_PORT]
         while True:
             try:
                 async with asyncio.timeout(CONNECT_TIMEOUT):
-                    reader, writer = await asyncio.open_connection(host, port)
+                    reader, writer = await asyncio.open_connection(await self._address(host), port)
             # OSError includes the timeout; ValueError is a host name that
             # cannot be encoded (`a..b`). Either way the next try may work.
             except (OSError, ValueError) as err:

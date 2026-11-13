@@ -3,6 +3,7 @@ import socket
 from unittest.mock import patch
 
 import pytest
+import pytest_socket
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE
@@ -131,6 +132,50 @@ async def test_a_host_that_cannot_be_a_name_is_tried_again(hass: HomeAssistant) 
         await asyncio.sleep(0.2)
     assert hass.states.get(sensor).state == STATE_OFF
     assert connect.call_count > 1, "the task died on the first try"
+
+
+async def test_a_local_name_is_resolved_by_mdns_at_every_try(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    # The Companion's address changes between tries: nobody listens on the
+    # first one, the fake listens on the second.
+    answers = iter(["127.0.0.2"])
+    asked = []
+
+    class Resolver:
+        def __init__(self, name: str) -> None:
+            asked.append(name)
+
+        async def async_request(self, zc, timeout) -> bool:
+            return True
+
+        def ip_addresses_by_version(self, version) -> list[str]:
+            return [next(answers, "127.0.0.1")]
+
+    pytest_socket.socket_allow_hosts(["127.0.0.1", "127.0.0.2"])
+    with patch("custom_components.redondo.AddressResolver", Resolver):
+        _, sensor = await setup(hass, companion.port, host="Redondo.local")
+        await companion.accepted()
+        await until(hass, sensor, STATE_ON)
+    assert asked == ["redondo.local.", "redondo.local."]
+
+
+async def test_a_local_name_mdns_does_not_know_goes_to_the_system_resolver(hass: HomeAssistant) -> None:
+    class Resolver:
+        def __init__(self, name: str) -> None:
+            pass
+
+        async def async_request(self, zc, timeout) -> bool:
+            return False
+
+    with (
+        patch("custom_components.redondo.RETRY_SECONDS", 0.05),
+        patch("custom_components.redondo.AddressResolver", Resolver),
+        patch("custom_components.redondo.asyncio.open_connection", side_effect=OSError) as connect,
+    ):
+        entry, _ = await setup(hass, 7010, host="redondo.local")
+        await asyncio.sleep(0.1)
+        # The task ends before the real resolver is back.
+        await hass.config_entries.async_unload(entry.entry_id)
+    assert connect.call_args.args == ("redondo.local", 7010)
 
 
 async def test_notify_writes_the_line(hass: HomeAssistant, companion: FakeCompanion) -> None:

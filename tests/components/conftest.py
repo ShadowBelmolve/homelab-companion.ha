@@ -6,6 +6,6 @@ import custom_components  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations):
-    """Let Home Assistant load integrations from custom_components/."""
+def auto_enable_custom_integrations(enable_custom_integrations, mock_async_zeroconf):
+    """Let Home Assistant load integrations from custom_components/; no real mDNS (the integration depends on zeroconf)."""
     yield

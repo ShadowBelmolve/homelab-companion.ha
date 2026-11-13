@@ -6,6 +6,9 @@
     uv run scripts/ha_dev.py token     # print an access token for the REST API
     uv run scripts/ha_dev.py down      # remove the container and its config volume
 
+`--lan` on every command: the container on this PC's network (port 8123), where
+mDNS works, for a real board added as `redondo.local`.
+
 The image tag is the homeassistant version installed in the venv, so the container
 runs the same HA the pytest suite tests against. The container dials out to the
 Companion: one on this PC (the simulator) is at the address `gateway()` returns.
@@ -120,14 +123,16 @@ def gateway() -> str:
     return docker("network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}").stdout.strip()
 
 
-def up(name, port):
+def up(name, port, lan=False):
     base = f"http://127.0.0.1:{port}"
     existing = docker("container", "inspect", "--format", "{{.Config.Image}}", name, check=False)
     if existing.returncode == 0 and existing.stdout.strip() != image():
         raise RuntimeError(f"{name} runs {existing.stdout.strip()}, not {image()}: run `down` first")
     if existing.returncode != 0:
         docker(
-            "run", "-d", "--name", name, "--label", f"{LABEL}={name}", "-p", f"0.0.0.0:{port}:8123", "-e", "TZ=America/Sao_Paulo",
+            "run", "-d", "--name", name, "--label", f"{LABEL}={name}", "-e", "TZ=America/Sao_Paulo",
+            # On the PC's network mDNS works (a board as redondo.local); behind the bridge it does not.
+            *(["--network", "host"] if lan else ["-p", f"0.0.0.0:{port}:8123"]),
             "-v", f"{name}-config:/config",
             "-v", f"{REPO / 'custom_components'}:/config/custom_components:ro",
             "-v", f"{REPO / 'dev' / 'configuration.yaml'}:/config/configuration.yaml:ro",
@@ -149,10 +154,13 @@ def main(argv=None):
     p.add_argument("command", choices=["up", "restart", "logs", "token", "down"])
     p.add_argument("--name", default="redondo-ha-dev")
     p.add_argument("--port", type=int, default=28133)
+    p.add_argument("--lan", action="store_true", help="on this PC's network, for a real board by its mDNS name; the port is then 8123")
     a = p.parse_args(argv)
+    if a.lan:
+        a.port = 8123
     base = f"http://127.0.0.1:{a.port}"
     if a.command == "up":
-        up(a.name, a.port)
+        up(a.name, a.port, a.lan)
         print(f"Home Assistant {image().rsplit(':', 1)[1]} up: http://<this host>:{a.port} (user dev / password dev)")
         print(f"A Companion on this PC (make sim APP=companion) is host {gateway()}, port 7010")
     elif a.command == "restart":

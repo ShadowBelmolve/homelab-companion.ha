@@ -8,6 +8,8 @@ Home Assistant connects to the Companion, as it does with ESPHome devices. The C
 
 Add the integration (Settings → Devices & services → Add integration → Redondo Companion) once per Companion: host (default `redondo.local`; an IPv4 address also works) and port (default 7010). Home Assistant keeps the connection open and tries again every 5 s while it is not.
 
+A host ending in `.local` is resolved at every try through Home Assistant's own mDNS (its `zeroconf` integration), then through the system resolver if mDNS gives no address; Home Assistant's container has no mDNS in its system resolver. So a Companion added by name is found again after its address changes, with the same device, entity and `config_entry_id`. One added by IPv4 address is not: delete it and add it again.
+
 - **`binary_sensor.<host>_connectivity`**: on while the connection is open. It goes off at once when the Companion closes it, and within 30 s when the Companion vanishes (TCP keepalive: idle 10 s, then 4 probes 5 s apart; `TCP_USER_TIMEOUT` of 30 s for a line sent and never acknowledged).
 - **Action `redondo.notify`**: sends one notification. It fails when that Companion is not connected; nothing is queued.
 
@@ -72,6 +74,8 @@ uv run scripts/ha_dev.py token     # an access token for the REST API
 uv run scripts/ha_dev.py down      # removes the container and its config volume
 ```
 
+`--lan` on every command puts the container on this PC's network instead of the Docker bridge: the UI is then on port 8123 and mDNS works, so a real board can be added as `redondo.local` (behind the bridge the name does not resolve). That Home Assistant sees the devices of the LAN.
+
 `uv run pytest -m live` is the automated check (about 30 s; the default `pytest` run skips it): a separate container `redondo-ha-live-test` on port 28134, the config flow through the REST API, a TCP server on this PC as the Companion, the sensor `on`, a `redondo.notify` call and the exact line received; the container is removed afterwards.
 
 ### With the Companion's simulator
@@ -84,6 +88,8 @@ The container dials out, so nothing of the Companion needs publishing. `up` prin
 4. Close the simulator: the sensor turns off. `uv run scripts/ha_dev.py down` when done.
 
 Run on 2026-11-13 with Home Assistant 2026.10.4: the sensor turned on, an `urgent-email` notification showed in the simulator, the sensor turned off when the simulator closed.
+
+Run on 2026-11-13 with `--lan` and a real board added as `redondo.local`: `binary_sensor.redondo_local_connectivity` turned on and a `redondo.notify` call returned 200; what the screen showed was not recorded. An address change on a real board was not tried (only the automated test, with two loopback addresses).
 
 ### Home Assistant OS in a virtual machine
 
@@ -100,7 +106,7 @@ uv run scripts/haos_vm.py destroy   # stops it and deletes ~/vms/redondo-ha
 - The VM is the user unit `redondo-haos-vm` (2 vCPUs, 4 GiB), its files in `~/vms/redondo-ha`. UI: `http://<this host>:18180` (user `dev`, password `dev` after `install`); 18223 is the legacy port 8123. The first boot downloads Home Assistant Core: 5 to 10 minutes.
 - The guest sees this PC as `10.0.2.2`. `install` adds the Companion at `10.0.2.2:7010`, the simulator (`make sim APP=companion` in the firmware repo); `--companion-port` picks another port. Run `install` again after editing the integration.
 - The guest cannot reach the LAN: the nftables table `inet redondo_haos_vm` drops what the VM sends to private networks, so this Home Assistant never talks to real devices. `stop` removes the table.
-- A real board: pass its IPv4 address to both commands, `start --companion <ipv4>` (opens the block for that address and the Companion's port only; on a running VM it just reloads the rule) and `install --companion <ipv4>` (adds it). A plain `start` leaves the rule as it is; `start --companion 10.0.2.2` closes it again. A name such as `redondo.local` does not resolve in the guest and is refused.
+- A real board: pass its IPv4 address to both commands, `start --companion <ipv4>` (opens the block for that address and the Companion's port only; on a running VM it just reloads the rule) and `install --companion <ipv4>` (adds it). A plain `start` leaves the rule as it is; `start --companion 10.0.2.2` closes it again. A name such as `redondo.local` does not resolve in the guest (mDNS does not reach it) and is refused.
 - `install` retries `ha core restart` for up to two minutes: right after a boot the Supervisor refuses it.
 - `install` types the integration into the guest's serial console (root, no password) as a base64 tar. To look around by hand: `socat - UNIX-CONNECT:$HOME/vms/redondo-ha/serial.sock`; the console's output is also in `~/vms/redondo-ha/serial.log`.
 - The image is the newest stable HAOS release that has one for virtual machines (`haos_ova-*.qcow2.xz`); a release can lack it, as 18.5 did.
