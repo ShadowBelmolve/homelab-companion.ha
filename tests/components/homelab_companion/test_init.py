@@ -19,7 +19,7 @@ from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from noise.connection import NoiseConnection
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-DOMAIN = "redondo"
+DOMAIN = "homelab_companion"
 NOTE = {"kind": "deal", "urgent": True, "seconds": 60, "title": "SSD NVMe 2 TB", "body": "R$ 599 na Kabum"}
 
 
@@ -70,7 +70,7 @@ async def companion(socket_enabled):
         noise = NoiseConnection.from_name(b"Noise_NNpsk0_25519_ChaChaPoly_SHA256")
         noise.set_as_responder()
         noise.set_psks(base64.b64decode(KEY))
-        noise.set_prologue(b"redondo/1")
+        noise.set_prologue(b"homelab-companion/1")
         noise.start_handshake()
         try:
             (length,) = struct.unpack(">H", await reader.readexactly(2))
@@ -86,7 +86,7 @@ async def companion(socket_enabled):
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
     fake.port = server.sockets[0].getsockname()[1]
     # No 5 s wait between tries in a test.
-    with patch("custom_components.redondo.RETRY_SECONDS", 0.05):
+    with patch("custom_components.homelab_companion.RETRY_SECONDS", 0.05):
         yield fake
     for writer in writers:
         writer.close()
@@ -121,7 +121,7 @@ async def flow(hass: HomeAssistant, **user_input) -> dict:
 
 
 async def test_user_step_names_the_entry_after_the_companion(hass: HomeAssistant, companion: FakeCompanion) -> None:
-    with patch("custom_components.redondo.async_setup_entry", return_value=True):
+    with patch("custom_components.homelab_companion.async_setup_entry", return_value=True):
         result = await flow(hass, port=companion.port)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert (result["title"], result["result"].unique_id) == ("mesa", "mesa")
@@ -139,7 +139,7 @@ async def test_user_step_says_what_is_wrong(hass: HomeAssistant, companion: Fake
         assert (result["type"], result["errors"]) == (FlowResultType.FORM, errors), user_input
     assert companion.refused == 1
     # The form is still good for the right answer.
-    with patch("custom_components.redondo.async_setup_entry", return_value=True):
+    with patch("custom_components.homelab_companion.async_setup_entry", return_value=True):
         result = await hass.config_entries.flow.async_configure(result["flow_id"], {"host": "127.0.0.1", "port": companion.port, "key": KEY})
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
@@ -154,7 +154,7 @@ async def test_user_step_does_not_hang_on_a_peer_that_is_not_a_companion(hass: H
 
         return await asyncio.start_server(handle, "127.0.0.1", 0)
 
-    with patch("custom_components.redondo.session.CONNECT_TIMEOUT", 1):
+    with patch("custom_components.homelab_companion.session.CONNECT_TIMEOUT", 1):
         # Silent; a length above the limit, with the message never coming.
         for answer, error in [(None, "cannot_connect"), (b"\xff\xff", "invalid_auth")]:
             # A flow that waits for ever fails here instead of hanging the run.
@@ -184,11 +184,11 @@ async def test_the_same_companion_again_moves_its_entry(hass: HomeAssistant, com
     assert entry.data == {"host": "127.0.0.1", "port": companion.port, "key": KEY}
 
 
-def announced(port: int, name: str = "mesa._redondo._tcp.local.") -> ZeroconfServiceInfo:
+def announced(port: int, name: str = "mesa._hl-companion._tcp.local.") -> ZeroconfServiceInfo:
     """What Home Assistant's zeroconf hands the flow for a board's announcement."""
     ip = ip_address("192.0.2.9")
     # The target and the address are the announcer's word: the flow uses neither.
-    return ZeroconfServiceInfo(ip, [ip], port, "elsewhere.local.", "_redondo._tcp.local.", name, {})
+    return ZeroconfServiceInfo(ip, [ip], port, "elsewhere.local.", "_hl-companion._tcp.local.", name, {})
 
 
 @pytest.fixture
@@ -205,7 +205,7 @@ def mdns(companion):
         def ip_addresses_by_version(self, version) -> list[str]:
             return ["127.0.0.1"]
 
-    with patch("custom_components.redondo.AddressResolver", Resolver):
+    with patch("custom_components.homelab_companion.AddressResolver", Resolver):
         yield
 
 
@@ -218,7 +218,7 @@ async def test_a_discovered_companion_asks_for_its_key_only(hass: HomeAssistant,
         result = await hass.config_entries.flow.async_configure(result["flow_id"], {"key": key})
         assert (result["type"], result["errors"]) == (FlowResultType.FORM, errors)
 
-    with patch("custom_components.redondo.async_setup_entry", return_value=True):
+    with patch("custom_components.homelab_companion.async_setup_entry", return_value=True):
         result = await hass.config_entries.flow.async_configure(result["flow_id"], {"key": KEY})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert (result["title"], result["result"].unique_id) == ("mesa", "mesa")
@@ -229,7 +229,7 @@ async def test_a_waiting_discovery_does_not_stop_adding_it_by_hand(hass: HomeAss
     # A card nobody answered, announced with a port where nothing listens.
     card = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=announced(1))
     assert card["step_id"] == "discovered"
-    with patch("custom_components.redondo.async_setup_entry", return_value=True):
+    with patch("custom_components.homelab_companion.async_setup_entry", return_value=True):
         result = await flow(hass, port=companion.port)
         await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -247,7 +247,7 @@ async def test_discovering_a_configured_companion_moves_it_to_its_name(hass: Hom
     # Added by address, with its key.
     entry = MockConfigEntry(domain=DOMAIN, unique_id="mesa", data={"host": "192.0.2.1", "port": 7010, "key": KEY})
     entry.add_to_hass(hass)
-    with patch("custom_components.redondo.async_setup_entry", return_value=True):
+    with patch("custom_components.homelab_companion.async_setup_entry", return_value=True):
         result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=announced(7011))
         await hass.async_block_till_done()
     assert (result["type"], result["reason"]) == (FlowResultType.ABORT, "already_configured")
@@ -256,7 +256,7 @@ async def test_discovering_a_configured_companion_moves_it_to_its_name(hass: Hom
 
 async def test_an_announcement_that_names_no_companion_is_dropped(hass: HomeAssistant) -> None:
     names = ["Mesa", "a.b", "", "-mesa", "mesa-", "a" * 64]
-    for name in [f"{name}._redondo._tcp.local." for name in names] + ["mesa._other._tcp.local."]:
+    for name in [f"{name}._hl-companion._tcp.local." for name in names] + ["mesa._other._tcp.local."]:
         result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=announced(7010, name))
         assert (result["type"], result["reason"]) == (FlowResultType.ABORT, "invalid_discovery_info"), name
 
@@ -280,7 +280,7 @@ async def test_sensor_follows_the_connection(hass: HomeAssistant, companion: Fak
 
 
 async def test_sensor_is_off_while_nothing_listens(hass: HomeAssistant, socket_enabled, unused_tcp_port: int) -> None:
-    with patch("custom_components.redondo.RETRY_SECONDS", 0.05):
+    with patch("custom_components.homelab_companion.RETRY_SECONDS", 0.05):
         entry, sensor = await setup(hass, unused_tcp_port)
         await asyncio.sleep(0.2)  # a few refused tries
         assert hass.states.get(sensor).state == STATE_OFF
@@ -313,8 +313,8 @@ async def test_a_host_that_cannot_be_a_name_is_tried_again(hass: HomeAssistant) 
     # Patched because the test plugin turns DNS off.
     error = UnicodeError("label empty or too long")
     with (
-        patch("custom_components.redondo.RETRY_SECONDS", 0.05),
-        patch("custom_components.redondo.session.asyncio.open_connection", side_effect=error) as connect,
+        patch("custom_components.homelab_companion.RETRY_SECONDS", 0.05),
+        patch("custom_components.homelab_companion.session.asyncio.open_connection", side_effect=error) as connect,
     ):
         _, sensor = await setup(hass, 7010, host="a..b")
         await asyncio.sleep(0.2)
@@ -339,7 +339,7 @@ async def test_a_local_name_is_resolved_by_mdns_at_every_try(hass: HomeAssistant
             return [next(answers, "127.0.0.1")]
 
     pytest_socket.socket_allow_hosts(["127.0.0.1", "127.0.0.2"])
-    with patch("custom_components.redondo.AddressResolver", Resolver):
+    with patch("custom_components.homelab_companion.AddressResolver", Resolver):
         _, sensor = await setup(hass, companion.port, host="Redondo.local")
         await companion.accepted()
         await until(hass, sensor, STATE_ON)
@@ -355,9 +355,9 @@ async def test_a_local_name_mdns_does_not_know_goes_to_the_system_resolver(hass:
             return False
 
     with (
-        patch("custom_components.redondo.RETRY_SECONDS", 0.05),
-        patch("custom_components.redondo.AddressResolver", Resolver),
-        patch("custom_components.redondo.session.asyncio.open_connection", side_effect=OSError) as connect,
+        patch("custom_components.homelab_companion.RETRY_SECONDS", 0.05),
+        patch("custom_components.homelab_companion.AddressResolver", Resolver),
+        patch("custom_components.homelab_companion.session.asyncio.open_connection", side_effect=OSError) as connect,
     ):
         entry, _ = await setup(hass, 7010, host="redondo.local")
         await asyncio.sleep(0.1)
@@ -394,7 +394,7 @@ async def test_notify_refuses_what_it_cannot_send(hass: HomeAssistant, companion
         await notify(hass, entry, title="a|b")
     with pytest.raises(ServiceValidationError, match="kind"):
         await notify(hass, entry, kind="a|b")
-    with pytest.raises(ServiceValidationError, match="not a Redondo"):
+    with pytest.raises(ServiceValidationError, match="not a Home Lab Companion"):
         await notify(hass, entry, config_entry_id="nope")
     for seconds in (0, 2**32):
         with pytest.raises(Exception, match="seconds"):

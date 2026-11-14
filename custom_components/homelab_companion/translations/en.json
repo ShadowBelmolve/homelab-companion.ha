@@ -3,7 +3,7 @@
     "flow_title": "{name}",
     "step": {
       "user": {
-        "title": "Redondo Companion",
+        "title": "Home Lab Companion",
         "description": "Home Assistant connects to the Companion, which listens on TCP port 7010. The key is the COMPANION_KEY the Companion was built with.",
         "data": {
           "host": "Host",
@@ -12,7 +12,7 @@
         }
       },
       "discovered": {
-        "title": "Redondo Companion found",
+        "title": "Home Lab Companion found",
         "description": "The Companion {name} announced itself on the network. Type the COMPANION_KEY it was built with.",
         "data": {
           "key": "Encryption key"

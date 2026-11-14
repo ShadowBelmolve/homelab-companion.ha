@@ -1,4 +1,4 @@
-"""Try the redondo integration in Home Assistant OS, in a QEMU/KVM virtual machine.
+"""Try the homelab_companion integration in Home Assistant OS, in a QEMU/KVM virtual machine.
 
     uv run scripts/haos_vm.py start     # download HAOS if missing, boot the VM, wait for Home Assistant
     uv run scripts/haos_vm.py install   # copy the integration in, restart Core, onboard, add the Companion (needs its key)
@@ -175,13 +175,13 @@ def install(companion: str | None, companion_port: int, key: str | None):
     # makes the extraction fail if the console dropped a byte.
     packed = io.BytesIO()
     with tarfile.open(fileobj=packed, mode="w:gz") as tar:
-        tar.add(REPO / "custom_components" / "redondo", "redondo", filter=lambda f: None if "__pycache__" in f.name else f)
+        tar.add(REPO / "custom_components" / "homelab_companion", "homelab_companion", filter=lambda f: None if "__pycache__" in f.name else f)
     text = base64.encodebytes(packed.getvalue()).decode()
     target = f"{GUEST_CONFIG}/custom_components"
     guest(
         [
-            f"cat > /tmp/redondo.b64 <<'END'\n{text}END\ntrue",
-            f"rm -rf {target}/redondo && mkdir -p {target} && base64 -d /tmp/redondo.b64 | tar -xz -C {target}",
+            f"cat > /tmp/homelab_companion.b64 <<'END'\n{text}END\ntrue",
+            f"rm -rf {target}/homelab_companion && mkdir -p {target} && base64 -d /tmp/homelab_companion.b64 | tar -xz -C {target}",
             # Right after a boot the Supervisor refuses it: up to two minutes of tries.
             "n=0; until ha core restart || [ $((n+=1)) -ge 12 ]; do sleep 10; done; [ $n -lt 12 ]",
         ]
@@ -193,7 +193,7 @@ def install(companion: str | None, companion_port: int, key: str | None):
     for tries_left in reversed(range(6)):
         try:
             token = ha_dev.onboard_and_login(BASE)
-            result = ha_dev.add_config_entry(BASE, token, "redondo", {"host": companion, "port": companion_port, "key": key})
+            result = ha_dev.add_config_entry(BASE, token, "homelab_companion", {"host": companion, "port": companion_port, "key": key})
             break
         except OSError:
             if not tries_left:

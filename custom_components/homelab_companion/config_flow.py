@@ -11,10 +11,10 @@ from . import CONF_KEY, DEFAULT_PORT, DOMAIN, address
 from .session import Refused, connect, parse_key
 
 PASSWORD = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
-SERVICE = "._redondo._tcp.local."
+SERVICE = "._hl-companion._tcp.local."
 
 
-class RedondoConfigFlow(ConfigFlow, domain=DOMAIN):
+class HomelabCompanionConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     # Set by the zeroconf step: the name announced and where it listens.

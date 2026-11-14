@@ -17,7 +17,7 @@ from noise.connection import NoiseConnection
 
 PATTERN = b"Noise_NNpsk0_25519_ChaChaPoly_SHA256"
 # Binds the handshake to this protocol and its version.
-PROLOGUE = b"redondo/1"
+PROLOGUE = b"homelab-companion/1"
 # The most bytes of a message after its length; the Companion ends the
 # connection on a longer one. 16 of them are the cipher's tag.
 MESSAGE_MAX = 1024

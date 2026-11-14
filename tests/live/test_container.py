@@ -42,7 +42,7 @@ def test_notify_reaches_a_companion_on_this_pc(ha):
             noise = NoiseConnection.from_name(b"Noise_NNpsk0_25519_ChaChaPoly_SHA256")
             noise.set_as_responder()
             noise.set_psks(key)
-            noise.set_prologue(b"redondo/1")
+            noise.set_prologue(b"homelab-companion/1")
             noise.start_handshake()
             noise.read_message(wire.read(struct.unpack(">H", wire.read(2))[0]))
             reply = noise.write_message(b"live")
@@ -53,7 +53,7 @@ def test_notify_reaches_a_companion_on_this_pc(ha):
         with ThreadPoolExecutor(1) as pool:
             flow = pool.submit(accept)
             user_input = {"host": host, "port": port, "key": base64.b64encode(key).decode()}
-            result = ha_dev.add_config_entry(base, token, "redondo", user_input)
+            result = ha_dev.add_config_entry(base, token, "homelab_companion", user_input)
             flow.result()[0].close()
         assert (result["type"], result["title"]) == ("create_entry", "live")
         link, wire, noise = accept()
@@ -66,7 +66,7 @@ def test_notify_reaches_a_companion_on_this_pc(ha):
 
         note = {"kind": "deal", "urgent": True, "seconds": 60, "title": "SSD NVMe 2 TB", "body": "R$ 599 na Kabum"}
         call = {"config_entry_id": result["result"]["entry_id"], **note}
-        status, body = ha_dev.request("POST", f"{base}/api/services/redondo/notify", json=call, token=token)
+        status, body = ha_dev.request("POST", f"{base}/api/services/homelab_companion/notify", json=call, token=token)
         assert status == 200, body
         message = wire.read(struct.unpack(">H", wire.read(2))[0])
         assert b"SSD" not in message, "plain text on the wire"

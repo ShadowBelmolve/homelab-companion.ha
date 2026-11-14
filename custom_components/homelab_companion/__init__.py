@@ -1,4 +1,4 @@
-"""Redondo Companion: Home Assistant connects to the round display and sends it notifications."""
+"""Home Lab Companion: Home Assistant connects to the round display and sends it notifications."""
 
 import asyncio
 import logging
@@ -18,7 +18,7 @@ from .session import Refused, Session, connect, parse_key
 
 _LOGGER = logging.getLogger(__name__)
 
-DOMAIN = "redondo"
+DOMAIN = "homelab_companion"
 DEFAULT_PORT = 7010
 PLATFORMS = [Platform.BINARY_SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -121,7 +121,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def notify(call: ServiceCall) -> None:
         entry = hass.config_entries.async_get_entry(call.data["config_entry_id"])
         if entry is None or entry.domain != DOMAIN:
-            raise ServiceValidationError("config_entry_id is not a Redondo Companion")
+            raise ServiceValidationError("config_entry_id is not a Home Lab Companion")
         payload = line(call.data)
         session = entry.runtime_data.session if entry.state is ConfigEntryState.LOADED else None
         if session is None:

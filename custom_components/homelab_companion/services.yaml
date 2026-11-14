@@ -4,7 +4,7 @@ notify:
       required: true
       selector:
         config_entry:
-          integration: redondo
+          integration: homelab_companion
     kind:
       required: true
       example: deal

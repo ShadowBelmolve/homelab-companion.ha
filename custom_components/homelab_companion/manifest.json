@@ -1,6 +1,6 @@
 {
-  "domain": "redondo",
-  "name": "Redondo Companion",
+  "domain": "homelab_companion",
+  "name": "Home Lab Companion",
   "codeowners": [],
   "config_flow": true,
   "dependencies": [
@@ -14,6 +14,6 @@
   ],
   "version": "0.1.0",
   "zeroconf": [
-    "_redondo._tcp.local."
+    "_hl-companion._tcp.local."
   ]
 }

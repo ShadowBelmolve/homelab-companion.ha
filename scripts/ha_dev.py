@@ -1,4 +1,4 @@
-"""Run the redondo integration in a real Home Assistant container (copied from the homelab haos repo).
+"""Run the homelab_companion integration in a real Home Assistant container (copied from the homelab haos repo).
 
     uv run scripts/ha_dev.py up        # start (or reuse) the container, onboard, print URL
     uv run scripts/ha_dev.py restart   # reload code after editing custom_components/
