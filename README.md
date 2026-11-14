@@ -71,6 +71,8 @@ The integration replaces line breaks in any field with spaces and refuses a `|` 
 
 Copy the folder `custom_components/homelab_companion` to `/config/custom_components/homelab_companion` (Samba, SSH or the file editor add-on), restart Home Assistant, then add the integration with the Companion's key. Home Assistant downloads `noiseprotocol` on the first start if it does not have it (the Home Assistant image ships it for ESPHome).
 
+HACS: the repository has the layout and the `hacs.json` HACS asks of a custom repository (type Integration), and a tag per version (`v0.1.0`). HACS reads GitHub only, so it needs a GitHub mirror of this repository; none exists yet.
+
 ## Develop
 
 ```bash
