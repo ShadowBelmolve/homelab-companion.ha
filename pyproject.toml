@@ -1,12 +1,13 @@
 [project]
 name = "redondo-ha"
-version = "0.0.1"
+version = "0.1.0"
 description = "Home Assistant integration for the Redondo Companion."
 requires-python = ">=3.14.2"
 
 [dependency-groups]
 # Pins homeassistant itself: the plugin tracks one exact release.
-dev = ["pytest-homeassistant-custom-component==0.13.375"]
+# noiseprotocol: the integration's requirement, which Home Assistant installs by itself.
+dev = ["pytest-homeassistant-custom-component==0.13.375", "noiseprotocol==0.3.1"]
 
 [tool.uv]
 package = false

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import socket
 
 import voluptuous as vol
 from homeassistant.components import zeroconf
@@ -15,6 +14,8 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.typing import ConfigType
 from zeroconf import AddressResolver, IPVersion
 
+from .session import Refused, Session, connect, parse_key
+
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "redondo"
@@ -22,14 +23,9 @@ DEFAULT_PORT = 7010
 PLATFORMS = [Platform.BINARY_SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-CONNECT_TIMEOUT = 10
-MDNS_TIMEOUT_MS = 3000
+CONF_KEY = "key"
 RETRY_SECONDS = 5
-# Kernel keepalive: a Companion that vanished without closing is noticed
-# within idle + interval * probes = 30 s. It needs no heartbeat line.
-# TCP_USER_TIMEOUT (in ms) covers what keepalive does not: a line sent and
-# never acknowledged, which would otherwise be retried for some 15 minutes.
-KEEPALIVE = {socket.TCP_KEEPIDLE: 10, socket.TCP_KEEPINTVL: 5, socket.TCP_KEEPCNT: 4, socket.TCP_USER_TIMEOUT: 30_000}
+MDNS_TIMEOUT_MS = 3000
 
 NOTIFY_SCHEMA = vol.Schema(
     {
@@ -50,56 +46,64 @@ def signal(entry_id: str) -> str:
     return f"{DOMAIN}_connected_{entry_id}"
 
 
+async def address(hass: HomeAssistant, host: str) -> str:
+    """A `.local` name's IPv4 address by Home Assistant's own mDNS; any other host as it is."""
+    # Home Assistant's container has no mDNS in its system resolver. Asked
+    # at every try, so a Companion whose address changed is found again.
+    name = host.rstrip(".").lower()
+    if name.endswith(".local"):
+        resolver = AddressResolver(f"{name}.")
+        if await resolver.async_request(await zeroconf.async_get_instance(hass), MDNS_TIMEOUT_MS):
+            if found := resolver.ip_addresses_by_version(IPVersion.V4Only):
+                return str(found[0])
+    return host
+
+
 class Link:
     """The connection to one Companion, kept open by `run`."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        self.writer: asyncio.StreamWriter | None = None
+        self.session: Session | None = None
 
-    def _set(self, writer: asyncio.StreamWriter | None) -> None:
-        self.writer = writer
+    def _set(self, session: Session | None) -> None:
+        self.session = session
         async_dispatcher_send(self.hass, signal(self.entry.entry_id))
-
-    async def _address(self, host: str) -> str:
-        """A `.local` name's IPv4 address by Home Assistant's own mDNS; any other host as it is."""
-        # Home Assistant's container has no mDNS in its system resolver. Asked
-        # at every try, so a Companion whose address changed is found again.
-        name = host.rstrip(".").lower()
-        if name.endswith(".local"):
-            resolver = AddressResolver(f"{name}.")
-            if await resolver.async_request(await zeroconf.async_get_instance(self.hass), MDNS_TIMEOUT_MS):
-                if found := resolver.ip_addresses_by_version(IPVersion.V4Only):
-                    return str(found[0])
-        return host
 
     async def run(self) -> None:
         host, port = self.entry.data[CONF_HOST], self.entry.data[CONF_PORT]
+        key = parse_key(self.entry.data[CONF_KEY])
+        problem = None
         while True:
             try:
-                async with asyncio.timeout(CONNECT_TIMEOUT):
-                    reader, writer = await asyncio.open_connection(await self._address(host), port)
+                session = await connect(await address(self.hass, host), port, key)
+                if session.name != self.entry.unique_id:
+                    session.writer.close()
+                    raise Refused(f"it is the Companion {session.name!r}, not {self.entry.unique_id!r}")
             # OSError includes the timeout; ValueError is a host name that
             # cannot be encoded (`a..b`). Either way the next try may work.
             except (OSError, ValueError) as err:
                 _LOGGER.debug("%s:%s: %s", host, port, err)
+            except Refused as err:
+                # Once, not at every try: this one needs somebody to act.
+                text = str(err) or "the key was refused, or it is not a Companion"
+                if text != problem:
+                    _LOGGER.warning("%s:%s: %s", host, port, text)
+                problem = text
             else:
-                sock = writer.get_extra_info("socket")
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                for option, value in KEEPALIVE.items():
-                    sock.setsockopt(socket.IPPROTO_TCP, option, value)
-                self._set(writer)
+                problem = None
+                self._set(session)
                 try:
-                    # The Companion sends nothing: this ends when it closes
-                    # (EOF) or vanishes (the keepalive's error).
-                    while await reader.read(1024):
+                    # The Companion sends nothing more: this ends when it
+                    # closes (EOF) or vanishes (the keepalive's error).
+                    while await session.reader.read(1024):
                         pass
                 except OSError as err:
                     _LOGGER.debug("%s:%s: %s", host, port, err)
                 finally:
                     self._set(None)
-                    writer.close()
+                    session.writer.close()
             await asyncio.sleep(RETRY_SECONDS)
 
 
@@ -119,12 +123,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         if entry is None or entry.domain != DOMAIN:
             raise ServiceValidationError("config_entry_id is not a Redondo Companion")
         payload = line(call.data)
-        writer = entry.runtime_data.writer if entry.state is ConfigEntryState.LOADED else None
-        if writer is None:
+        session = entry.runtime_data.session if entry.state is ConfigEntryState.LOADED else None
+        if session is None:
             raise HomeAssistantError(f"{entry.title} is not connected")
         try:
-            writer.write(payload)
-            await writer.drain()
+            await session.send(payload)
         except OSError as err:
             raise HomeAssistantError(f"{entry.title}: {err}") from err
 

@@ -162,7 +162,7 @@ def main(argv=None):
     if a.command == "up":
         up(a.name, a.port, a.lan)
         print(f"Home Assistant {image().rsplit(':', 1)[1]} up: http://<this host>:{a.port} (user dev / password dev)")
-        print(f"A Companion on this PC (make sim APP=companion) is host {gateway()}, port 7010")
+        print(f"A Companion on this PC (make sim APP=companion) is host {gateway()}, port 7010; the key is its COMPANION_KEY")
     elif a.command == "restart":
         docker("restart", a.name)
         wait_ready(base)

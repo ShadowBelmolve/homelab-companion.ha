@@ -1,9 +1,12 @@
 import asyncio
+import base64
 import socket
+import struct
 from unittest.mock import patch
 
 import pytest
 import pytest_socket
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE
@@ -11,10 +14,33 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
+from noise.connection import NoiseConnection
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 DOMAIN = "redondo"
 NOTE = {"kind": "deal", "urgent": True, "seconds": 60, "title": "SSD NVMe 2 TB", "body": "R$ 599 na Kabum"}
+
+
+KEY = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+OTHER_KEY = "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg="
+
+
+class Peer:
+    """The Companion's end of one connection whose handshake is done."""
+
+    def __init__(self, reader, writer, noise) -> None:
+        self.reader, self.writer, self.noise = reader, writer, noise
+        self.text = b""
+
+    async def readline(self) -> bytes:
+        """The next line Home Assistant sent, decrypted."""
+        async with asyncio.timeout(2):
+            while b"\n" not in self.text:
+                (length,) = struct.unpack(">H", await self.reader.readexactly(2))
+                assert length <= 1024, "a message the Companion would refuse"
+                self.text += self.noise.decrypt(await self.reader.readexactly(length))
+        line, _, self.text = self.text.partition(b"\n")
+        return line + b"\n"
 
 
 class FakeCompanion:
@@ -23,9 +49,12 @@ class FakeCompanion:
     def __init__(self) -> None:
         self.links: asyncio.Queue = asyncio.Queue()
         self.port = 0
+        self.name = "mesa"
+        # Connections ended as the firmware ends one with another key.
+        self.refused = 0
 
-    async def accepted(self):
-        """The (reader, writer) of the next connection Home Assistant opened."""
+    async def accepted(self) -> Peer:
+        """The next connection Home Assistant opened and keyed."""
         return await asyncio.wait_for(self.links.get(), 2)
 
 
@@ -36,7 +65,21 @@ async def companion(socket_enabled):
 
     async def handle(reader, writer):
         writers.append(writer)
-        fake.links.put_nowait((reader, writer))
+        noise = NoiseConnection.from_name(b"Noise_NNpsk0_25519_ChaChaPoly_SHA256")
+        noise.set_as_responder()
+        noise.set_psks(base64.b64decode(KEY))
+        noise.set_prologue(b"redondo/1")
+        noise.start_handshake()
+        try:
+            (length,) = struct.unpack(">H", await reader.readexactly(2))
+            noise.read_message(await reader.readexactly(length))
+        except Exception:  # noqa: BLE001 - a wrong key, or the client left
+            fake.refused += 1
+            writer.close()
+            return
+        reply = noise.write_message(fake.name.encode())
+        writer.write(struct.pack(">H", len(reply)) + reply)
+        fake.links.put_nowait(Peer(reader, writer, noise))
 
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
     fake.port = server.sockets[0].getsockname()[1]
@@ -48,9 +91,9 @@ async def companion(socket_enabled):
     server.close()
 
 
-async def setup(hass: HomeAssistant, port: int, host: str = "127.0.0.1") -> tuple[MockConfigEntry, str]:
+async def setup(hass: HomeAssistant, port: int, host: str = "127.0.0.1", key: str = KEY) -> tuple[MockConfigEntry, str]:
     """A loaded entry for the fake at `port` and its sensor's entity id."""
-    entry = MockConfigEntry(domain=DOMAIN, unique_id=host, title="redondo", data={"host": host, "port": port})
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="mesa", title="mesa", data={"host": host, "port": port, "key": key})
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -69,37 +112,83 @@ async def notify(hass: HomeAssistant, entry: MockConfigEntry, **changes) -> None
     await hass.services.async_call(DOMAIN, "notify", data, blocking=True)
 
 
-async def test_user_step_creates_an_entry_with_the_default_port(hass: HomeAssistant) -> None:
+async def flow(hass: HomeAssistant, **user_input) -> dict:
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
     assert result["type"] is FlowResultType.FORM
+    return await hass.config_entries.flow.async_configure(result["flow_id"], {"host": "127.0.0.1", "key": KEY, **user_input})
+
+
+async def test_user_step_names_the_entry_after_the_companion(hass: HomeAssistant, companion: FakeCompanion) -> None:
     with patch("custom_components.redondo.async_setup_entry", return_value=True):
-        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"host": "redondo.local"})
+        result = await flow(hass, port=companion.port)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "redondo.local"
-    assert result["data"] == {"host": "redondo.local", "port": 7010}
+    assert (result["title"], result["result"].unique_id) == ("mesa", "mesa")
+    assert result["data"] == {"host": "127.0.0.1", "port": companion.port, "key": KEY}
+
+
+async def test_user_step_says_what_is_wrong(hass: HomeAssistant, companion: FakeCompanion, unused_tcp_port: int) -> None:
+    for user_input, errors in [
+        ({"port": companion.port, "key": "not a key"}, {"key": "invalid_key"}),
+        ({"port": companion.port, "key": KEY[:-4]}, {"key": "invalid_key"}),
+        ({"port": unused_tcp_port}, {"base": "cannot_connect"}),
+        ({"port": companion.port, "key": OTHER_KEY}, {"base": "invalid_auth"}),
+    ]:
+        result = await flow(hass, **user_input)
+        assert (result["type"], result["errors"]) == (FlowResultType.FORM, errors), user_input
+    assert companion.refused == 1
+    # The form is still good for the right answer.
+    with patch("custom_components.redondo.async_setup_entry", return_value=True):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"host": "127.0.0.1", "port": companion.port, "key": KEY})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_user_step_does_not_hang_on_a_peer_that_is_not_a_companion(hass: HomeAssistant, socket_enabled) -> None:
+    async def serve(answer: bytes | None) -> asyncio.Server:
+        async def handle(reader, writer):
+            if answer is not None:
+                writer.write(answer)
+            await reader.read()  # until Home Assistant gives up
+            writer.close()
+
+        return await asyncio.start_server(handle, "127.0.0.1", 0)
+
+    with patch("custom_components.redondo.session.CONNECT_TIMEOUT", 1):
+        # Silent; a length above the limit, with the message never coming.
+        for answer, error in [(None, "cannot_connect"), (b"\xff\xff", "invalid_auth")]:
+            # A flow that waits for ever fails here instead of hanging the run.
+            async with await serve(answer) as server, asyncio.timeout(5):
+                result = await flow(hass, port=server.sockets[0].getsockname()[1])
+            assert (result["type"], result["errors"]) == (FlowResultType.FORM, {"base": error}), answer
+
+
+async def test_user_step_default_port_is_the_companions(hass: HomeAssistant) -> None:
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    defaults = {str(key): key.default() for key in result["data_schema"].schema if key.default is not vol.UNDEFINED}
+    assert defaults == {"host": "redondo.local", "port": 7010}
 
 
 async def test_user_step_refuses_a_port_that_does_not_exist(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
     with pytest.raises(InvalidData):
-        await hass.config_entries.flow.async_configure(result["flow_id"], {"host": "redondo.local", "port": 99999})
+        await hass.config_entries.flow.async_configure(result["flow_id"], {"host": "redondo.local", "port": 99999, "key": KEY})
 
 
-async def test_same_host_twice_aborts(hass: HomeAssistant) -> None:
-    MockConfigEntry(domain=DOMAIN, unique_id="redondo.local").add_to_hass(hass)
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"host": "Redondo.local"})
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "already_configured"
+async def test_the_same_companion_again_moves_its_entry(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    # Added when it was somewhere else, with another key.
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="mesa", data={"host": "192.0.2.1", "port": 7010, "key": OTHER_KEY})
+    entry.add_to_hass(hass)
+    result = await flow(hass, port=companion.port)
+    assert (result["type"], result["reason"]) == (FlowResultType.ABORT, "already_configured")
+    assert entry.data == {"host": "127.0.0.1", "port": companion.port, "key": KEY}
 
 
 async def test_sensor_follows_the_connection(hass: HomeAssistant, companion: FakeCompanion) -> None:
     entry, sensor = await setup(hass, companion.port)
-    assert sensor == "binary_sensor.redondo_connectivity"
-    _, writer = await companion.accepted()
+    assert sensor == "binary_sensor.mesa_connectivity"
+    writer = (await companion.accepted()).writer
     await until(hass, sensor, STATE_ON)
     # What turns it off within 30 s of a Companion vanishing.
-    sock = entry.runtime_data.writer.get_extra_info("socket")
+    sock = entry.runtime_data.session.writer.get_extra_info("socket")
     assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
     options = (socket.TCP_KEEPIDLE, socket.TCP_KEEPINTVL, socket.TCP_KEEPCNT, socket.TCP_USER_TIMEOUT)
     assert [sock.getsockopt(socket.IPPROTO_TCP, o) for o in options] == [10, 5, 4, 30_000]
@@ -120,13 +209,33 @@ async def test_sensor_is_off_while_nothing_listens(hass: HomeAssistant, socket_e
             await notify(hass, entry)
 
 
+async def test_a_key_the_companion_refuses_keeps_the_sensor_off(hass: HomeAssistant, companion: FakeCompanion, caplog) -> None:
+    entry, sensor = await setup(hass, companion.port, key=OTHER_KEY)
+    await asyncio.sleep(0.3)
+    assert hass.states.get(sensor).state == STATE_OFF
+    assert companion.refused > 1, "it keeps trying"
+    assert caplog.text.count("the key was refused") == 1, "said once"
+    assert OTHER_KEY not in caplog.text and KEY not in caplog.text
+    with pytest.raises(HomeAssistantError, match="not connected"):
+        await notify(hass, entry)
+
+
+async def test_another_companion_at_the_address_is_not_used(hass: HomeAssistant, companion: FakeCompanion, caplog) -> None:
+    companion.name = "sala"
+    _, sensor = await setup(hass, companion.port)
+    await companion.accepted()
+    await asyncio.sleep(0.2)
+    assert hass.states.get(sensor).state == STATE_OFF
+    assert "it is the Companion 'sala', not 'mesa'" in caplog.text
+
+
 async def test_a_host_that_cannot_be_a_name_is_tried_again(hass: HomeAssistant) -> None:
     # What `open_connection` raises for `a..b`: a ValueError, not an OSError.
     # Patched because the test plugin turns DNS off.
     error = UnicodeError("label empty or too long")
     with (
         patch("custom_components.redondo.RETRY_SECONDS", 0.05),
-        patch("custom_components.redondo.asyncio.open_connection", side_effect=error) as connect,
+        patch("custom_components.redondo.session.asyncio.open_connection", side_effect=error) as connect,
     ):
         _, sensor = await setup(hass, 7010, host="a..b")
         await asyncio.sleep(0.2)
@@ -169,7 +278,7 @@ async def test_a_local_name_mdns_does_not_know_goes_to_the_system_resolver(hass:
     with (
         patch("custom_components.redondo.RETRY_SECONDS", 0.05),
         patch("custom_components.redondo.AddressResolver", Resolver),
-        patch("custom_components.redondo.asyncio.open_connection", side_effect=OSError) as connect,
+        patch("custom_components.redondo.session.asyncio.open_connection", side_effect=OSError) as connect,
     ):
         entry, _ = await setup(hass, 7010, host="redondo.local")
         await asyncio.sleep(0.1)
@@ -180,7 +289,7 @@ async def test_a_local_name_mdns_does_not_know_goes_to_the_system_resolver(hass:
 
 async def test_notify_writes_the_line(hass: HomeAssistant, companion: FakeCompanion) -> None:
     entry, sensor = await setup(hass, companion.port)
-    reader, _ = await companion.accepted()
+    reader = await companion.accepted()
     await until(hass, sensor, STATE_ON)
 
     await notify(hass, entry)
@@ -199,7 +308,7 @@ async def test_notify_writes_the_line(hass: HomeAssistant, companion: FakeCompan
 
 async def test_notify_refuses_what_it_cannot_send(hass: HomeAssistant, companion: FakeCompanion) -> None:
     entry, sensor = await setup(hass, companion.port)
-    reader, _ = await companion.accepted()
+    reader = await companion.accepted()
     await until(hass, sensor, STATE_ON)
 
     with pytest.raises(ServiceValidationError, match="title"):
@@ -219,13 +328,13 @@ async def test_notify_refuses_what_it_cannot_send(hass: HomeAssistant, companion
 
 async def test_unload_closes_the_connection(hass: HomeAssistant, companion: FakeCompanion) -> None:
     entry, sensor = await setup(hass, companion.port)
-    reader, _ = await companion.accepted()
+    reader = await companion.accepted()
     await until(hass, sensor, STATE_ON)
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.NOT_LOADED
     assert hass.states.get(sensor).state == STATE_UNAVAILABLE
-    assert await asyncio.wait_for(reader.read(), 2) == b""  # EOF: the socket closed
+    assert await asyncio.wait_for(reader.reader.read(), 2) == b""  # EOF: the socket closed
     with pytest.raises(HomeAssistantError, match="not connected"):
         await notify(hass, entry)

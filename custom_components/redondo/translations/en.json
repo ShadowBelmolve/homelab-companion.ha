@@ -3,15 +3,21 @@
     "step": {
       "user": {
         "title": "Redondo Companion",
-        "description": "Home Assistant connects to the Companion, which listens on TCP port 7010.",
+        "description": "Home Assistant connects to the Companion, which listens on TCP port 7010. The key is the COMPANION_KEY the Companion was built with.",
         "data": {
           "host": "Host",
-          "port": "Port"
+          "port": "Port",
+          "key": "Encryption key"
         }
       }
     },
     "abort": {
-      "already_configured": "This Companion is already configured."
+      "already_configured": "This Companion is already configured; its host, port and key were updated."
+    },
+    "error": {
+      "invalid_key": "A key is 32 bytes in base64 (44 characters).",
+      "cannot_connect": "Nothing answered at that host and port, or the Companion is already connected to Home Assistant.",
+      "invalid_auth": "The key was refused, or it is not a Companion."
     }
   },
   "services": {

@@ -1,7 +1,7 @@
 """Try the redondo integration in Home Assistant OS, in a QEMU/KVM virtual machine.
 
     uv run scripts/haos_vm.py start     # download HAOS if missing, boot the VM, wait for Home Assistant
-    uv run scripts/haos_vm.py install   # copy the integration in, restart Core, onboard, add the Companion
+    uv run scripts/haos_vm.py install   # copy the integration in, restart Core, onboard, add the Companion (needs its key)
     uv run scripts/haos_vm.py token     # print an access token for the REST API
     uv run scripts/haos_vm.py stop      # stop the VM (its disk stays, `start` boots it again)
     uv run scripts/haos_vm.py destroy   # stop it and delete its disk
@@ -166,8 +166,10 @@ def guest(commands: list[str], timeout: float = 600) -> None:
                 raise RuntimeError(f"in the guest: {command[:60]!r} failed:\n{seen.decode(errors='replace')[-600:]}")
 
 
-def install(companion: str | None, companion_port: int):
+def install(companion: str | None, companion_port: int, key: str | None):
     companion = companion or HOST_FROM_GUEST
+    if not key:
+        sys.exit("the Companion's key: --key or COMPANION_KEY (the firmware repo's `make key`)")
     # A tar of the integration, typed into the console as base64: the guest
     # needs no network path to this PC and no extra tool. gzip's checksum
     # makes the extraction fail if the console dropped a byte.
@@ -191,13 +193,13 @@ def install(companion: str | None, companion_port: int):
     for tries_left in reversed(range(6)):
         try:
             token = ha_dev.onboard_and_login(BASE)
-            result = ha_dev.add_config_entry(BASE, token, "redondo", {"host": companion, "port": companion_port})
+            result = ha_dev.add_config_entry(BASE, token, "redondo", {"host": companion, "port": companion_port, "key": key})
             break
         except OSError:
             if not tries_left:
                 raise
             time.sleep(10)
-    added = "added" if result["type"] == "create_entry" else f"not added ({result.get('reason', result['type'])})"
+    added = "added" if result["type"] == "create_entry" else f"not added ({result.get('reason') or result.get('errors') or result['type']})"
     print(f"integration installed; Companion {companion}:{companion_port} {added}")
     print(f"http://<this host>:{UI_PORT} (user dev / password dev)")
 
@@ -218,11 +220,12 @@ def main(argv=None):
         f"opens the LAN block for that address and port only ({HOST_FROM_GUEST} closes it again), `install` adds it",
     )
     p.add_argument("--companion-port", type=int, default=7010, help="start, install: the Companion's port")
+    p.add_argument("--key", default=os.environ.get("COMPANION_KEY"), help="install: the Companion's COMPANION_KEY (default: that variable)")
     a = p.parse_args(argv)
     if a.command == "start":
         start(a.companion, a.companion_port)
     elif a.command == "install":
-        install(a.companion, a.companion_port)
+        install(a.companion, a.companion_port, a.key)
     elif a.command == "token":
         print(ha_dev.login(BASE))
     else:

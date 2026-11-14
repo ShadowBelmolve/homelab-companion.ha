@@ -15,7 +15,7 @@ async def async_setup_entry(
 
 
 class ConnectedSensor(BinarySensorEntity):
-    """On while the connection to the Companion is open."""
+    """On while the encrypted connection to the Companion is open."""
 
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_has_entity_name = True
@@ -28,7 +28,7 @@ class ConnectedSensor(BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return self._entry.runtime_data.writer is not None
+        return self._entry.runtime_data.session is not None
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(
