@@ -3,8 +3,9 @@
 `Noise_NNpsk0_25519_ChaChaPoly_SHA256`, the pattern of ESPHome's native API:
 Home Assistant is the initiator, the key typed in the config flow is the
 pre-shared key, every Noise message travels after its length (2 bytes, big
-endian). The Companion's handshake reply carries its name. The wire is
-specified in the firmware repo: apps/companion/SPEC.md.
+endian). The Companion's handshake reply carries its name. What travels
+inside the session is in protocol.py; the wire is specified in the firmware
+repo: apps/companion/SPEC.md.
 """
 
 import asyncio
@@ -15,9 +16,9 @@ import struct
 
 from noise.connection import NoiseConnection
 
+from .protocol import PROLOGUE
+
 PATTERN = b"Noise_NNpsk0_25519_ChaChaPoly_SHA256"
-# Binds the handshake to this protocol and its version.
-PROLOGUE = b"homelab-companion/1"
 # The most bytes of a message after its length; the Companion ends the
 # connection on a longer one. 16 of them are the cipher's tag.
 MESSAGE_MAX = 1024

@@ -1,6 +1,7 @@
 """End-to-end check in a real HA container: uv run pytest -m live"""
 
 import base64
+import json
 import os
 import socket
 import struct
@@ -42,7 +43,7 @@ def test_notify_reaches_a_companion_on_this_pc(ha):
             noise = NoiseConnection.from_name(b"Noise_NNpsk0_25519_ChaChaPoly_SHA256")
             noise.set_as_responder()
             noise.set_psks(key)
-            noise.set_prologue(b"homelab-companion/1")
+            noise.set_prologue(b"homelab-companion/2")
             noise.start_handshake()
             noise.read_message(wire.read(struct.unpack(">H", wire.read(2))[0]))
             reply = noise.write_message(b"live")
@@ -70,5 +71,7 @@ def test_notify_reaches_a_companion_on_this_pc(ha):
         assert status == 200, body
         message = wire.read(struct.unpack(">H", wire.read(2))[0])
         assert b"SSD" not in message, "plain text on the wire"
-        assert noise.decrypt(message) == "deal|1|60|SSD NVMe 2 TB|R$ 599 na Kabum\n".encode()
+        line = bytes(noise.decrypt(message))
+        assert line.endswith(b"\n")
+        assert json.loads(line) == {"t": "notify", "kind": "deal", "urgent": True, "ms": 60_000, "title": note["title"], "body": note["body"]}
         link.close()

@@ -1,6 +1,6 @@
 # homelab-companion.ha
 
-Home Assistant side of the Home Lab Companion, the round touch display: the custom integration Home Lab Companion, domain `homelab_companion` (version 0.1.0). "redondo" is only the nickname of one such device: it stays only in the default host `redondo.local`, the name of a board built without `REDONDO_NAME`.
+Home Assistant side of the Home Lab Companion, the round touch display: the custom integration Home Lab Companion, domain `homelab_companion` (version 0.2.0, protocol 2). "redondo" is only the nickname of one such device: it stays only in the default host `redondo.local`, the name of a board built without `REDONDO_NAME`.
 
 Home Assistant connects to the Companion, as it does with ESPHome devices. The Companion listens on TCP port 7010 and knows no server address. The connection is encrypted with a key the two share; nothing crosses the network in clear.
 
@@ -20,7 +20,7 @@ Home Assistant connects to the Companion, as it does with ESPHome devices. The C
 - **Both forms connect and do the handshake** before they create anything. Their errors: `invalid_key` (not 32 bytes of base64), `cannot_connect` (nothing answered at that host and port, or the Companion is already connected to Home Assistant: it takes one connection at a time), `invalid_auth` (the key was refused, or it is not a Companion).
 - **The Companion's name** arrives in the handshake and is the entry's title and identity, whatever host was typed. Adding by hand a Companion that is already configured creates nothing: it updates that entry's host, port and key. That is how to follow a Companion added by IPv4 whose address changed, or a key that changed; there is no reauthentication flow.
 - Home Assistant keeps the connection open and tries again every 5 s while it is not. A Companion that answers with another name than the entry's is not used. A refused key is logged as a warning once, then tried again like the rest.
-- Entries of version 0.0.1 hold no key and are not migrated: delete them and add the Companion again. The same for entries made while the domain was `redondo`, and a board needs firmware that announces `_hl-companion._tcp` and speaks the prologue `homelab-companion/1` (an older one is neither discovered nor accepted).
+- Entries of version 0.0.1 hold no key and are not migrated: delete them and add the Companion again. The same for entries made while the domain was `redondo`, and a board needs firmware that announces `_hl-companion._tcp` and speaks protocol 2 (Protocol below; a board with older firmware is refused as if its key were wrong).
 
 A host ending in `.local` is resolved at every try through Home Assistant's own mDNS (its `zeroconf` integration), then through the system resolver if mDNS gives no address; Home Assistant's container has no mDNS in its system resolver. So a Companion added by name is found again after its address changes, with the same device, entity and `config_entry_id`. One added by IPv4 address is not: add it again with the new address, which moves its entry.
 
@@ -51,21 +51,19 @@ data:
 
 The session, as ESPHome's native API encrypts its own (`custom_components/homelab_companion/session.py`; the full wire format is in the firmware repo's `apps/companion/SPEC.md`):
 
-- `Noise_NNpsk0_25519_ChaChaPoly_SHA256` with the Python package `noiseprotocol` 0.3.1, a requirement in the manifest that Home Assistant installs by itself. Home Assistant is the initiator, the key is the pre-shared key, the prologue is `homelab-companion/1`.
+- `Noise_NNpsk0_25519_ChaChaPoly_SHA256` with the Python package `noiseprotocol` 0.3.1, a requirement in the manifest that Home Assistant installs by itself. Home Assistant is the initiator, the key is the pre-shared key, the prologue is `homelab-companion/2`. A Companion with the firmware of protocol 1 (the pipe-separated line, integration 0.1.0) fails the handshake and shows as a refused key: update both together.
 - Every Noise message travels after its length, 2 bytes big endian, and has at most 1024 bytes.
 - Two handshake messages: Home Assistant's, then the Companion's, whose encrypted payload is the Companion's name. Connecting and the handshake have 10 s together.
-- After it the Companion sends nothing, and Home Assistant sends the lines below as encrypted messages (a line longer than 1008 bytes spans several).
 - A Companion that refuses the key closes the connection without a reply.
 
-One line per notification inside the session, UTF-8, ending in a line feed:
+Inside the session (`custom_components/homelab_companion/protocol.py`, which imports nothing of Home Assistant): lines ended by a line feed, each one JSON object in UTF-8 (not escaped to ASCII) of at most 1024 bytes, whose `t` names the message. A field the receiver does not know is ignored and a message it does not know is dropped. Every time is in milliseconds.
 
 ```
-kind|urgent|seconds|title|body
-email|0|15|3|
-deal|1|60|SSD NVMe 2 TB|R$ 599 na Kabum, 32% abaixo do preço pedido
+{"t":"notify","kind":"email","urgent":false,"ms":15000,"title":"3","body":""}
+{"t":"notify","kind":"deal","urgent":true,"ms":60000,"title":"SSD NVMe 2 TB","body":"R$ 599 na Kabum, 32% abaixo do preço pedido"}
 ```
 
-The integration replaces line breaks in any field with spaces and refuses a `|` in `kind` or `title` (the body is the last field and may hold one). The Companion shows Latin-1 text only. The full rules live in the firmware repo: `ai-context/decisions/companion-ha-server.md`, `ai-context/decisions/companion-name-encryption-discovery.md` and `ai-context/decisions/companion-eyes-notifications.md`.
+`notify` is the one message the integration sends so far; it reads nothing the Companion sends yet. The action's `seconds` field (1 to 4,294,967) becomes `ms`. The title is cut at 80 characters and the body at 200, where the Companion cuts them; a call whose line is still over 1024 bytes (only with many characters of 4 bytes) is refused. The Companion shows Latin-1 text only. The full rules live in the firmware repo: `apps/companion/SPEC.md` and `ai-context/decisions/companion-protocol-2-screen-off.md`.
 
 ## Install on Home Assistant OS
 
@@ -81,7 +79,7 @@ uv run pytest
 docker run --rm -v "$PWD":/github/workspace ghcr.io/home-assistant/hassfest
 ```
 
-- `pytest` runs a real in-process Home Assistant (`pytest-homeassistant-custom-component`, which pins the Home Assistant version) against a fake Companion: a TCP server on loopback that answers the handshake as the firmware does (`tests/components/homelab_companion/test_init.py`, 21 tests; the discovery tests hand the flow what Home Assistant's zeroconf would). Tests that open sockets take the plugin's `socket_enabled` fixture. `noiseprotocol` is a dev dependency too: the plugin does not install an integration's requirements.
+- `pytest` runs a real in-process Home Assistant (`pytest-homeassistant-custom-component`, which pins the Home Assistant version) against a fake Companion: a TCP server on loopback that answers the handshake as the firmware does (`tests/components/homelab_companion/test_init.py`, 21 tests; `test_protocol.py` has 4 more for `protocol.py` alone; the discovery tests hand the flow what Home Assistant's zeroconf would). Tests that open sockets take the plugin's `socket_enabled` fixture. `noiseprotocol` is a dev dependency too: the plugin does not install an integration's requirements.
 - `tests/components/conftest.py` imports `custom_components` first; without it Home Assistant loads the plugin's own `custom_components` and reports `Integration 'homelab_companion' not found`.
 - hassfest must end with `Invalid integrations: 0`.
 - Without Home Assistant, the firmware repo's `make notify [HOST=<host>]` sends lines to a Companion or to its simulator, with the `COMPANION_KEY` of its `local.mk`.
@@ -100,7 +98,7 @@ uv run scripts/ha_dev.py down      # removes the container and its config volume
 
 `--lan` on every command puts the container on this PC's network instead of the Docker bridge: the UI is then on port 8123 and mDNS works, so a real board can be added as `redondo.local` (behind the bridge the name does not resolve). That Home Assistant sees the devices of the LAN.
 
-`uv run pytest -m live` is the automated check (about 30 s; the default `pytest` run skips it): a separate container `homelab-companion-ha-live-test` on port 28134, the config flow through the REST API with a random key, a TCP server on this PC that answers the handshake as the Companion, the sensor `on`, a `homelab_companion.notify` call, the exact line received once decrypted and its text absent from the bytes on the wire; the container is removed afterwards.
+`uv run pytest -m live` is the automated check (about 30 s; the default `pytest` run skips it): a separate container `homelab-companion-ha-live-test` on port 28134, the config flow through the REST API with a random key, a TCP server on this PC that answers the handshake as the Companion, the sensor `on`, a `homelab_companion.notify` call, the JSON line received once decrypted and its text absent from the bytes on the wire; the container is removed afterwards.
 
 ### With the Companion's simulator
 
@@ -120,6 +118,8 @@ Discovery, run on 2026-11-13 with Home Assistant 2026.10.4 started with `--lan`,
 A real board, run on 2026-11-13 with Home Assistant 2026.10.4 started with `--lan` and version 0.1.0 (the board built with a name and a key, no script announcing for it): Home Assistant discovered the board by itself from the board's own announcement, the form asking only for the key; a wrong key gave `invalid_auth` and the right key on the same form created the entry named after the board; `binary_sensor.<name>_connectivity` was on and still on some minutes later; a `homelab_companion.notify` returned 200; a tcpdump of the board's port 7010 during a notification held none of its title, body or kind words (one 73-byte payload: 2 length bytes, 55 of text, 16 of tag). Those notifications ran before anyone watched the screen; two sent afterwards straight to the board with the firmware repo's `make notify` were seen on it by the user (the urgent one first, then the normal one). A `homelab_companion.notify` call seen on the board's screen, and how the text looks on it, were not recorded.
 
 The runs above were made while the integration was named `redondo` (domain, action, service `_redondo._tcp`, prologue `redondo/1`). After the rename to Home Lab Companion: `uv run pytest` (21 tests), `uv run pytest -m live`, hassfest, and a fresh `--lan` Home Assistant 2026.10.4 container discovered a board with the renamed firmware (a `homelab_companion` flow at step `discovered`, the board's name). Not run again after the rename: the key, the sensor, a notification, the capture, HAOS.
+
+Version 0.2.0 (protocol 2), 2026-11-14: `uv run pytest` (25 tests) and `uv run pytest -m live`. Not run with it: the simulator, a real board, HAOS.
 
 ### Home Assistant OS in a virtual machine
 

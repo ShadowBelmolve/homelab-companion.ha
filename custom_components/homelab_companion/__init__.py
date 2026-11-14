@@ -14,6 +14,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.typing import ConfigType
 from zeroconf import AddressResolver, IPVersion
 
+from . import protocol
 from .session import Refused, Session, connect, parse_key
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,8 +34,8 @@ NOTIFY_SCHEMA = vol.Schema(
         # Not checked against a list: the Companion decides what a kind shows.
         vol.Required("kind"): cv.string,
         vol.Required("urgent"): cv.boolean,
-        # The Companion drops a line whose seconds do not fit in 32 bits.
-        vol.Required("seconds"): vol.All(vol.Coerce(int), vol.Range(min=1, max=2**32 - 1)),
+        # On the wire it is milliseconds, which the Companion takes in 32 bits.
+        vol.Required("seconds"): vol.All(vol.Coerce(int), vol.Range(min=1, max=(2**32 - 1) // 1000)),
         vol.Required("title"): cv.string,
         vol.Optional("body", default=""): cv.string,
     }
@@ -107,22 +108,18 @@ class Link:
             await asyncio.sleep(RETRY_SECONDS)
 
 
-def line(data: dict) -> bytes:
-    """The Companion's `kind|urgent|seconds|title|body` line for a notify call."""
-    for name in ("kind", "title"):
-        if "|" in data[name]:
-            raise ServiceValidationError(f"'{name}' cannot contain '|', the field separator")
-    fields = (data["kind"], "1" if data["urgent"] else "0", str(data["seconds"]), data["title"], data["body"])
-    # A line break would start another notification.
-    return ("|".join(fields).translate({10: " ", 13: " "}) + "\n").encode()
-
-
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def notify(call: ServiceCall) -> None:
         entry = hass.config_entries.async_get_entry(call.data["config_entry_id"])
         if entry is None or entry.domain != DOMAIN:
             raise ServiceValidationError("config_entry_id is not a Home Lab Companion")
-        payload = line(call.data)
+        data = call.data
+        try:
+            payload = protocol.encode(
+                protocol.notify(data["kind"], data["urgent"], data["seconds"] * 1000, data["title"], data["body"])
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
         session = entry.runtime_data.session if entry.state is ConfigEntryState.LOADED else None
         if session is None:
             raise HomeAssistantError(f"{entry.title} is not connected")

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import socket
 import struct
 from ipaddress import ip_address
@@ -70,7 +71,7 @@ async def companion(socket_enabled):
         noise = NoiseConnection.from_name(b"Noise_NNpsk0_25519_ChaChaPoly_SHA256")
         noise.set_as_responder()
         noise.set_psks(base64.b64decode(KEY))
-        noise.set_prologue(b"homelab-companion/1")
+        noise.set_prologue(b"homelab-companion/2")
         noise.start_handshake()
         try:
             (length,) = struct.unpack(">H", await reader.readexactly(2))
@@ -371,18 +372,22 @@ async def test_notify_writes_the_line(hass: HomeAssistant, companion: FakeCompan
     reader = await companion.accepted()
     await until(hass, sensor, STATE_ON)
 
-    await notify(hass, entry)
-    assert await reader.readline() == "deal|1|60|SSD NVMe 2 TB|R$ 599 na Kabum\n".encode()
+    await notify(hass, entry, title="Atenção", body="R$ 599 na Kabum")
+    line = await reader.readline()
+    assert "Atenção".encode() in line, "UTF-8, not escaped to ASCII"
+    want = {"t": "notify", "kind": "deal", "urgent": True, "ms": 60_000, "title": "Atenção", "body": "R$ 599 na Kabum"}
+    assert json.loads(line) == want
 
     # The email screen: not urgent, no body; a number selector hands a float.
     await hass.services.async_call(
         DOMAIN, "notify", {"config_entry_id": entry.entry_id, "kind": "email", "urgent": False, "seconds": 15.0, "title": "3"}, blocking=True
     )
-    assert await reader.readline() == b"email|0|15|3|\n"
+    assert json.loads(await reader.readline()) == {"t": "notify", "kind": "email", "urgent": False, "ms": 15_000, "title": "3", "body": ""}
 
-    # A line break would be a second notification; the body may hold a '|'.
-    await notify(hass, entry, kind="novo", urgent=False, body="a\r\nb|c")
-    assert await reader.readline() == b"novo|0|60|SSD NVMe 2 TB|a  b|c\n"
+    # Still one line each, whatever the text holds.
+    await notify(hass, entry, kind="a|b", title='c|"d"', body="e\r\nf|g")
+    got = json.loads(await reader.readline())
+    assert (got["kind"], got["title"], got["body"]) == ("a|b", 'c|"d"', "e\r\nf|g")
 
 
 async def test_notify_refuses_what_it_cannot_send(hass: HomeAssistant, companion: FakeCompanion) -> None:
@@ -390,19 +395,18 @@ async def test_notify_refuses_what_it_cannot_send(hass: HomeAssistant, companion
     reader = await companion.accepted()
     await until(hass, sensor, STATE_ON)
 
-    with pytest.raises(ServiceValidationError, match="title"):
-        await notify(hass, entry, title="a|b")
-    with pytest.raises(ServiceValidationError, match="kind"):
-        await notify(hass, entry, kind="a|b")
+    # A line the Companion would drop: 4 bytes a character fills it.
+    with pytest.raises(ServiceValidationError, match="1024"):
+        await notify(hass, entry, title="😀" * 80, body="😀" * 200)
     with pytest.raises(ServiceValidationError, match="not a Home Lab Companion"):
         await notify(hass, entry, config_entry_id="nope")
-    for seconds in (0, 2**32):
+    for seconds in (0, 2**32 // 1000 + 1):
         with pytest.raises(Exception, match="seconds"):
             await notify(hass, entry, seconds=seconds)
 
     # Nothing of the refused calls reached the Companion.
     await notify(hass, entry)
-    assert (await reader.readline()).startswith(b"deal|1|60|")
+    assert json.loads(await reader.readline())["title"] == NOTE["title"]
 
 
 async def test_unload_closes_the_connection(hass: HomeAssistant, companion: FakeCompanion) -> None:
