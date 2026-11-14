@@ -1,5 +1,6 @@
 {
   "config": {
+    "flow_title": "{name}",
     "step": {
       "user": {
         "title": "Redondo Companion",
@@ -9,15 +10,24 @@
           "port": "Port",
           "key": "Encryption key"
         }
+      },
+      "discovered": {
+        "title": "Redondo Companion found",
+        "description": "The Companion {name} announced itself on the network. Type the COMPANION_KEY it was built with.",
+        "data": {
+          "key": "Encryption key"
+        }
       }
-    },
-    "abort": {
-      "already_configured": "This Companion is already configured; its host, port and key were updated."
     },
     "error": {
       "invalid_key": "A key is 32 bytes in base64 (44 characters).",
       "cannot_connect": "Nothing answered at that host and port, or the Companion is already connected to Home Assistant.",
-      "invalid_auth": "The key was refused, or it is not a Companion."
+      "invalid_auth": "The key was refused, or it is not a Companion.",
+      "wrong_device": "Another Companion answered at that name."
+    },
+    "abort": {
+      "already_configured": "This Companion is already configured; its host, port and key were updated.",
+      "invalid_discovery_info": "What announced itself is not a Companion."
     }
   },
   "services": {

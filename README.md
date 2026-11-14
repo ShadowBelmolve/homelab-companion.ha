@@ -6,11 +6,19 @@ Home Assistant connects to the Companion, as it does with ESPHome devices. The C
 
 ## What it gives
 
-Add the integration (Settings → Devices & services → Add integration → Redondo Companion) once per Companion: host (default `redondo.local`, the name of a board built without `REDONDO_NAME`; a board with a name is `<name>.local`; an IPv4 address also works), port (default 7010) and the encryption key.
+**Discovery.** A board announces itself on the network (the mDNS service `_redondo._tcp.local`), so Home Assistant shows it under Settings → Devices & services as a discovered Redondo Companion, with its name. The form asks only for the encryption key.
+
+- The entry is created with the host `<name>.local` and the announced port, and only if the Companion that answers there, with that key, says it has the announced name (`wrong_device` otherwise).
+- The host is built from the announced name, never from the address or the target in the announcement: an announcement is not authenticated, the handshake is.
+- An announcement whose name a board cannot have (lowercase letters, digits and `-`, not at the ends, 1 to 63 characters) is dropped.
+- A Companion already configured gets no card: its entry's host becomes `<name>.local` and its port the announced one, without a handshake (the Companion's one connection is the entry's), and the entry reloads only when that changed anything. So one added by IPv4 address follows its name once Home Assistant hears it.
+- Known limit: somebody on the LAN who announces services can show cards that no key completes, or change a configured entry's port, which turns its sensor off until the board announces again. The key never leaves Home Assistant and no notification goes to a peer without it.
+
+**By hand.** Add the integration (Settings → Devices & services → Add integration → Redondo Companion): host (default `redondo.local`, the name of a board built without `REDONDO_NAME`; a board with a name is `<name>.local`; an IPv4 address also works), port (default 7010) and the encryption key. It is the way for what Home Assistant cannot hear: the simulator, which does not announce itself, and a Home Assistant that mDNS does not reach (a container behind the Docker bridge, the HAOS virtual machine below). A discovery card of the same Companion left waiting does not stop it, and goes away when the entry is created.
 
 - **The key** is the `COMPANION_KEY` the Companion was built with: 32 bytes in base64, 44 characters, printed by `make key` in the firmware repo. Home Assistant stores it in the config entry as text, as it does with an ESPHome key, and never logs it.
-- **The form connects and does the handshake** before it creates anything. Its errors: `invalid_key` (not 32 bytes of base64), `cannot_connect` (nothing answered at that host and port, or the Companion is already connected to Home Assistant: it takes one connection at a time), `invalid_auth` (the key was refused, or it is not a Companion).
-- **The Companion's name** arrives in the handshake and is the entry's title and identity, whatever host was typed. Adding a Companion that is already configured creates nothing: it updates that entry's host, port and key. That is how to follow a Companion added by IPv4 whose address changed, or a key that changed; there is no reauthentication flow.
+- **Both forms connect and do the handshake** before they create anything. Their errors: `invalid_key` (not 32 bytes of base64), `cannot_connect` (nothing answered at that host and port, or the Companion is already connected to Home Assistant: it takes one connection at a time), `invalid_auth` (the key was refused, or it is not a Companion).
+- **The Companion's name** arrives in the handshake and is the entry's title and identity, whatever host was typed. Adding by hand a Companion that is already configured creates nothing: it updates that entry's host, port and key. That is how to follow a Companion added by IPv4 whose address changed, or a key that changed; there is no reauthentication flow.
 - Home Assistant keeps the connection open and tries again every 5 s while it is not. A Companion that answers with another name than the entry's is not used. A refused key is logged as a warning once, then tried again like the rest.
 - Entries of version 0.0.1 hold no key and are not migrated: delete them and add the Companion again.
 
@@ -71,7 +79,7 @@ uv run pytest
 docker run --rm -v "$PWD":/github/workspace ghcr.io/home-assistant/hassfest
 ```
 
-- `pytest` runs a real in-process Home Assistant (`pytest-homeassistant-custom-component`, which pins the Home Assistant version) against a fake Companion: a TCP server on loopback that answers the handshake as the firmware does (`tests/components/redondo/test_init.py`, 16 tests). Tests that open sockets take the plugin's `socket_enabled` fixture. `noiseprotocol` is a dev dependency too: the plugin does not install an integration's requirements.
+- `pytest` runs a real in-process Home Assistant (`pytest-homeassistant-custom-component`, which pins the Home Assistant version) against a fake Companion: a TCP server on loopback that answers the handshake as the firmware does (`tests/components/redondo/test_init.py`, 21 tests; the discovery tests hand the flow what Home Assistant's zeroconf would). Tests that open sockets take the plugin's `socket_enabled` fixture. `noiseprotocol` is a dev dependency too: the plugin does not install an integration's requirements.
 - `tests/components/conftest.py` imports `custom_components` first; without it Home Assistant loads the plugin's own `custom_components` and reports `Integration 'redondo' not found`.
 - hassfest must end with `Invalid integrations: 0`.
 - Without Home Assistant, the firmware repo's `make notify [HOST=<host>]` sends lines to a Companion or to its simulator, with the `COMPANION_KEY` of its `local.mk`.
@@ -104,6 +112,8 @@ The container dials out, so nothing of the Companion needs publishing. `up` prin
 Run on 2026-11-13 with Home Assistant 2026.10.4 and version 0.1.0, the entry added through the REST API: a wrong key gave `invalid_auth`, the right key created an entry named after the simulator, its sensor turned on, a `redondo.notify` call returned 200 and the notification showed on the simulator's screen.
 
 Not run with version 0.1.0: a real board (version 0.0.1 reached one in clear, added as `redondo.local` with `--lan`), and an address change on a real board (only the automated test, with two loopback addresses).
+
+Discovery, run on 2026-11-13 with Home Assistant 2026.10.4 started with `--lan`, the simulator on this PC and its service announced by a python-zeroconf script (the simulator does not announce itself, and no board was on): Home Assistant opened the flow by itself with the Companion's name in the card, a wrong key gave `invalid_auth`, the right key created the entry named after the Companion with the host `<name>.local`, its sensor turned on, and a `redondo.notify` returned 200 and showed on the simulator's screen. Not run against a board's own announcement.
 
 ### Home Assistant OS in a virtual machine
 

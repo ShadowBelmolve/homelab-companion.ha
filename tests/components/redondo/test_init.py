@@ -2,6 +2,7 @@ import asyncio
 import base64
 import socket
 import struct
+from ipaddress import ip_address
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from noise.connection import NoiseConnection
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -180,6 +182,83 @@ async def test_the_same_companion_again_moves_its_entry(hass: HomeAssistant, com
     result = await flow(hass, port=companion.port)
     assert (result["type"], result["reason"]) == (FlowResultType.ABORT, "already_configured")
     assert entry.data == {"host": "127.0.0.1", "port": companion.port, "key": KEY}
+
+
+def announced(port: int, name: str = "mesa._redondo._tcp.local.") -> ZeroconfServiceInfo:
+    """What Home Assistant's zeroconf hands the flow for a board's announcement."""
+    ip = ip_address("192.0.2.9")
+    # The target and the address are the announcer's word: the flow uses neither.
+    return ZeroconfServiceInfo(ip, [ip], port, "elsewhere.local.", "_redondo._tcp.local.", name, {})
+
+
+@pytest.fixture
+def mdns(companion):
+    """`mesa.local` resolves to the fake Companion."""
+
+    class Resolver:
+        def __init__(self, name: str) -> None:
+            assert name == "mesa.local."
+
+        async def async_request(self, zc, timeout) -> bool:
+            return True
+
+        def ip_addresses_by_version(self, version) -> list[str]:
+            return ["127.0.0.1"]
+
+    with patch("custom_components.redondo.AddressResolver", Resolver):
+        yield
+
+
+async def test_a_discovered_companion_asks_for_its_key_only(hass: HomeAssistant, companion: FakeCompanion, mdns) -> None:
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=announced(companion.port))
+    assert (result["type"], result["step_id"], result["description_placeholders"]) == (FlowResultType.FORM, "discovered", {"name": "mesa"})
+    assert [str(key) for key in result["data_schema"].schema] == ["key"]
+
+    for key, errors in [("not a key", {"key": "invalid_key"}), (OTHER_KEY, {"base": "invalid_auth"})]:
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"key": key})
+        assert (result["type"], result["errors"]) == (FlowResultType.FORM, errors)
+
+    with patch("custom_components.redondo.async_setup_entry", return_value=True):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"key": KEY})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert (result["title"], result["result"].unique_id) == ("mesa", "mesa")
+    assert result["data"] == {"host": "mesa.local", "port": companion.port, "key": KEY}
+
+
+async def test_a_waiting_discovery_does_not_stop_adding_it_by_hand(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    # A card nobody answered, announced with a port where nothing listens.
+    card = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=announced(1))
+    assert card["step_id"] == "discovered"
+    with patch("custom_components.redondo.async_setup_entry", return_value=True):
+        result = await flow(hass, port=companion.port)
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert hass.config_entries.flow.async_progress() == [], "the card went with it"
+
+
+async def test_a_discovered_name_that_another_companion_answers_is_refused(hass: HomeAssistant, companion: FakeCompanion, mdns) -> None:
+    companion.name = "sala"
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=announced(companion.port))
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"key": KEY})
+    assert (result["type"], result["errors"]) == (FlowResultType.FORM, {"base": "wrong_device"})
+
+
+async def test_discovering_a_configured_companion_moves_it_to_its_name(hass: HomeAssistant) -> None:
+    # Added by address, with its key.
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="mesa", data={"host": "192.0.2.1", "port": 7010, "key": KEY})
+    entry.add_to_hass(hass)
+    with patch("custom_components.redondo.async_setup_entry", return_value=True):
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=announced(7011))
+        await hass.async_block_till_done()
+    assert (result["type"], result["reason"]) == (FlowResultType.ABORT, "already_configured")
+    assert entry.data == {"host": "mesa.local", "port": 7011, "key": KEY}
+
+
+async def test_an_announcement_that_names_no_companion_is_dropped(hass: HomeAssistant) -> None:
+    names = ["Mesa", "a.b", "", "-mesa", "mesa-", "a" * 64]
+    for name in [f"{name}._redondo._tcp.local." for name in names] + ["mesa._other._tcp.local."]:
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=announced(7010, name))
+        assert (result["type"], result["reason"]) == (FlowResultType.ABORT, "invalid_discovery_info"), name
 
 
 async def test_sensor_follows_the_connection(hass: HomeAssistant, companion: FakeCompanion) -> None:
