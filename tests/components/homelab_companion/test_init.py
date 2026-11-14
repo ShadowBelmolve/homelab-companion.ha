@@ -102,9 +102,13 @@ async def companion(socket_enabled):
     server.close()
 
 
-async def setup(hass: HomeAssistant, port: int, host: str = "127.0.0.1", key: str = KEY) -> tuple[MockConfigEntry, str]:
+async def setup(
+    hass: HomeAssistant, port: int, host: str = "127.0.0.1", key: str = KEY, options: dict | None = None
+) -> tuple[MockConfigEntry, str]:
     """A loaded entry for the fake at `port` and its sensor's entity id."""
-    entry = MockConfigEntry(domain=DOMAIN, unique_id="mesa", title="mesa", data={"host": host, "port": port, "key": key})
+    entry = MockConfigEntry(
+        domain=DOMAIN, unique_id="mesa", title="mesa", data={"host": host, "port": port, "key": key}, options=options or {}
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -578,3 +582,83 @@ async def test_the_event_entity_tells_how_a_notification_left(hass: HomeAssistan
     await fired("expired", kind="email", title="3")
     assert hass.states.get(entity).state != first, "each event is a new moment"
     assert hass.states.get(entity).attributes["event_types"] == ["dismissed", "expired"]
+
+
+async def set_number(hass: HomeAssistant, entry: MockConfigEntry, key: str, value: float) -> None:
+    data = {"entity_id": entity_id(hass, entry, "number", key), "value": value}
+    await hass.services.async_call("number", "set_value", data, blocking=True)
+
+
+async def test_the_settings_are_numbers_with_the_firmware_defaults(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    entry, connected = await setup(hass, companion.port)
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+    want = {"dim_ms": "300000", "off_ms": "300000", "awake_pct": "100", "dim_pct": "20"}
+    for key, default in want.items():
+        assert hass.states.get(entity_id(hass, entry, "number", key)).state == default, key
+        assert er.async_get(hass).async_get(entity_id(hass, entry, "number", key)).entity_category == "config"
+    dim = hass.states.get(entity_id(hass, entry, "number", "dim_ms"))
+    assert (dim.attributes["device_class"], dim.attributes["min"], dim.name) == ("duration", 0, "mesa Time until the screen dims")
+    # Nothing was set: the Companion keeps its own values, and the first line is whatever comes next.
+    await notify(hass, entry)
+    assert json.loads(await peer.readline())["t"] == "notify"
+
+
+async def test_a_number_is_stored_and_sent_and_sent_again_at_every_connection(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    entry, connected = await setup(hass, companion.port)
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+
+    await set_number(hass, entry, "dim_ms", 120_000)
+    assert json.loads(await peer.readline()) == {"t": "config", "dim_ms": 120000}, "a whole number, only what changed"
+    assert entry.options == {"dim_ms": 120000}
+    assert hass.states.get(entity_id(hass, entry, "number", "dim_ms")).state == "120000"
+    assert hass.states.get(connected).state == STATE_ON, "storing it did not reload the entry"
+    with pytest.raises(Exception, match="dim_pct|101|range"):
+        await set_number(hass, entry, "dim_pct", 101)
+
+    # Away: still a number to set, kept for when the Companion is back.
+    peer.writer.close()
+    await until(hass, connected, STATE_OFF)
+    await set_number(hass, entry, "dim_pct", 5)
+    await set_number(hass, entry, "off_ms", 0)
+    assert hass.states.get(entity_id(hass, entry, "number", "dim_pct")).state == "5"
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+    # Every stored setting, before anything else.
+    await notify(hass, entry)
+    assert json.loads(await peer.readline()) == {"t": "config", "dim_ms": 120000, "dim_pct": 5, "off_ms": 0}
+    assert json.loads(await peer.readline())["t"] == "notify"
+
+
+async def test_stored_settings_go_out_right_after_the_handshake(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    # An option that is no setting (of another version) is not sent.
+    options = {"awake_pct": 80, "dim_ms": 60000, "volume": 3}
+    entry, connected = await setup(hass, companion.port, options=options)
+    peer = await companion.accepted()
+    assert json.loads(await peer.readline()) == {"t": "config", "awake_pct": 80, "dim_ms": 60000}
+    await until(hass, connected, STATE_ON)
+    assert hass.states.get(entity_id(hass, entry, "number", "awake_pct")).state == "80"
+
+
+async def test_each_button_sends_its_command(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    entry, connected = await setup(hass, companion.port)
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+
+    async def press(key: str) -> None:
+        await hass.services.async_call("button", "press", {"entity_id": entity_id(hass, entry, "button", key)}, blocking=True)
+
+    # No state arrived: a command needs none.
+    for key in ("wake", "clear", "restart"):
+        await press(key)
+        assert json.loads(await peer.readline()) == {"t": "cmd", "do": key}
+    assert hass.states.get(entity_id(hass, entry, "button", "wake")).name == "mesa Turn the screen on"
+
+    peer.writer.close()
+    await until(hass, connected, STATE_OFF)
+    assert hass.states.get(entity_id(hass, entry, "button", "restart")).state == STATE_UNAVAILABLE
+    # Pressed anyway (an automation does not look first).
+    with patch("custom_components.homelab_companion.entity.CompanionEntity.available", True):
+        with pytest.raises(HomeAssistantError, match="not connected"):
+            await press("clear")

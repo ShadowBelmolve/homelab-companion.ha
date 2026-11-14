@@ -20,11 +20,8 @@ class NotificationEvent(CompanionEntity, EventEntity):
     """`dismissed` by a tap or `expired` when its time ended, with the notification's `kind` and `title`."""
 
     _attr_event_types = ["dismissed", "expired"]
-
-    @property
-    def available(self) -> bool:
-        """An event needs no state: the Companion may send one before its first."""
-        return self.link.session is not None
+    # The Companion may send an event before its first state.
+    needs_state = False
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

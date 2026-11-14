@@ -19,6 +19,8 @@ LINE_MAX = 1024
 # The Companion cuts a notification's texts to these many characters.
 TITLE_MAX = 80
 BODY_MAX = 200
+# The settings of `config` and the values the firmware starts with.
+DEFAULTS = {"dim_ms": 300_000, "off_ms": 300_000, "awake_pct": 100, "dim_pct": 20}
 
 
 def encode(message: dict) -> bytes:
@@ -42,3 +44,15 @@ def notify(kind: str, urgent: bool, ms: int, title: str, body: str = "") -> dict
     """One notification: `kind` picks the screen, `urgent` the queue, `ms` the most it stays on screen."""
     # Trimmed and cut as the Companion does it, so a long text is not a line too long.
     return {"t": "notify", "kind": kind, "urgent": urgent, "ms": ms, "title": title.strip()[:TITLE_MAX], "body": body.strip()[:BODY_MAX]}
+
+
+def config(**settings: int) -> dict:
+    """Settings by their names in DEFAULTS; one left out keeps its value on the Companion."""
+    if unknown := settings.keys() - DEFAULTS.keys():
+        raise ValueError(f"not a setting: {sorted(unknown)}")
+    return {"t": "config", **settings}
+
+
+def cmd(do: str) -> dict:
+    """Something to do now: `wake` (the screen on), `clear` (both queues emptied) or `restart`."""
+    return {"t": "cmd", "do": do}

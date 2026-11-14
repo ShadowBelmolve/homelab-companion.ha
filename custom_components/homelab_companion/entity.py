@@ -13,6 +13,8 @@ class CompanionEntity(Entity):
 
     _attr_has_entity_name = True
     _attr_should_poll = False
+    # False for an entity that needs the connection but nothing the Companion reports.
+    needs_state = True
 
     def __init__(self, entry: ConfigEntry, key: str) -> None:
         self._entry = entry
@@ -27,7 +29,7 @@ class CompanionEntity(Entity):
     @property
     def available(self) -> bool:
         """What the Companion reports is known only while it is connected and has sent its state."""
-        return self.link.state is not None
+        return self.link.session is not None and (self.link.state is not None or not self.needs_state)
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(async_dispatcher_connect(self.hass, signal(self._entry.entry_id), self.async_write_ha_state))

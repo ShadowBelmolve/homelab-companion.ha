@@ -74,4 +74,32 @@ def test_notify_reaches_a_companion_on_this_pc(ha):
         line = bytes(noise.decrypt(message))
         assert line.endswith(b"\n")
         assert json.loads(line) == {"t": "notify", "kind": "deal", "urgent": True, "ms": 60_000, "title": note["title"], "body": note["body"]}
+
+        def received() -> dict:
+            return json.loads(bytes(noise.decrypt(wire.read(struct.unpack(">H", wire.read(2))[0]))))
+
+        def state_of(entity: str, want: str) -> None:
+            deadline = time.monotonic() + 10
+            while (got := ha_dev.request("GET", f"{base}/api/states/{entity}", token=token)[1]).get("state") != want:
+                assert time.monotonic() < deadline, got
+                time.sleep(0.2)
+
+        def call(service: str, **data) -> None:
+            status, body = ha_dev.request("POST", f"{base}/api/services/{service}", json=data, token=token)
+            assert status == 200, body
+
+        # What the Companion sends shows in its sensors.
+        state = {"t": "state", "rssi": -61, "normal": 2, "urgent": 0, "screen": "dim", "heap": 126408, "uptime_ms": 60000, "version": "live"}
+        sealed = noise.encrypt(json.dumps(state).encode() + b"\n")
+        link.sendall(struct.pack(">H", len(sealed)) + sealed)
+        state_of("sensor.live_wi_fi_signal", "-61")
+        state_of("sensor.live_normal_queue", "2")
+        state_of("sensor.live_screen", "dim")
+
+        # A setting and a command reach it.
+        call("number/set_value", entity_id="number.live_time_until_the_screen_dims", value=120000)
+        assert received() == {"t": "config", "dim_ms": 120000}
+        state_of("number.live_time_until_the_screen_dims", "120000")
+        call("button/press", entity_id="button.live_turn_the_screen_on")
+        assert received() == {"t": "cmd", "do": "wake"}
         link.close()

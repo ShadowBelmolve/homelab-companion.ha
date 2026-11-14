@@ -24,7 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "homelab_companion"
 DEFAULT_PORT = 7010
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.EVENT, Platform.SENSOR]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.EVENT, Platform.NUMBER, Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 CONF_KEY = "key"
@@ -88,6 +88,15 @@ class Link:
         self.state = None
         async_dispatcher_send(self.hass, signal(self.entry.entry_id))
 
+    async def send(self, message: dict) -> None:
+        """Sends a message of protocol.py; HomeAssistantError when the Companion is not connected or vanished."""
+        if (session := self.session) is None:
+            raise HomeAssistantError(f"{self.entry.title} is not connected")
+        try:
+            await session.send(protocol.encode(message))
+        except OSError as err:
+            raise HomeAssistantError(f"{self.entry.title}: {err}") from err
+
     def _receive(self, line: bytes) -> None:
         """One line of the Companion, to what shows it."""
         message = protocol.decode(line)
@@ -130,8 +139,12 @@ class Link:
                 problem = text
             else:
                 problem = None
-                self._set(session)
                 try:
+                    # The settings first, before anything else can use the
+                    # session: the Companion keeps none across a reset.
+                    if settings := {key: value for key, value in self.entry.options.items() if key in protocol.DEFAULTS}:
+                        await session.send(protocol.encode(protocol.config(**settings)))
+                    self._set(session)
                     # Ends when the Companion closes (EOF) or vanishes (the
                     # keepalive's error).
                     async for line in session.lines():
@@ -154,19 +167,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         if entry is None or entry.domain != DOMAIN:
             raise ServiceValidationError("config_entry_id is not a Home Lab Companion")
         data = call.data
+        message = protocol.notify(data["kind"], data["urgent"], data["seconds"] * 1000, data["title"], data["body"])
+        # A call that can never be sent says so, connected or not.
         try:
-            payload = protocol.encode(
-                protocol.notify(data["kind"], data["urgent"], data["seconds"] * 1000, data["title"], data["body"])
-            )
+            protocol.encode(message)
         except ValueError as err:
             raise ServiceValidationError(str(err)) from err
-        session = entry.runtime_data.session if entry.state is ConfigEntryState.LOADED else None
-        if session is None:
+        if entry.state is not ConfigEntryState.LOADED:
             raise HomeAssistantError(f"{entry.title} is not connected")
-        try:
-            await session.send(payload)
-        except OSError as err:
-            raise HomeAssistantError(f"{entry.title}: {err}") from err
+        await entry.runtime_data.send(message)
 
     hass.services.async_register(DOMAIN, "notify", notify, schema=NOTIFY_SCHEMA)
     return True

@@ -35,3 +35,12 @@ def test_decode_takes_any_object_with_a_t() -> None:
     assert protocol.decode(json.dumps(state).encode() + b"\n") == state
     for bad in (b"", b"deal|1|60|a|b", b"[]", b'"state"', b'{"rssi":1}', b'{"t":1}', b'{"t":"state"', b"\xff"):
         assert protocol.decode(bad) is None, bad
+
+
+def test_config_and_cmd_are_what_the_companion_reads() -> None:
+    assert protocol.encode(protocol.config(dim_ms=0, dim_pct=20)) == b'{"t":"config","dim_ms":0,"dim_pct":20}\n'
+    assert protocol.config() == {"t": "config"}
+    with pytest.raises(ValueError, match="volume"):
+        protocol.config(volume=3)
+    assert protocol.encode(protocol.cmd("wake")) == b'{"t":"cmd","do":"wake"}\n'
+    assert set(protocol.DEFAULTS) == {"dim_ms", "off_ms", "awake_pct", "dim_pct"}

@@ -100,6 +100,31 @@
           }
         }
       }
+    },
+    "number": {
+      "dim_ms": {
+        "name": "Time until the screen dims"
+      },
+      "off_ms": {
+        "name": "Time dimmed until the screen turns off"
+      },
+      "awake_pct": {
+        "name": "Brightness"
+      },
+      "dim_pct": {
+        "name": "Brightness dimmed"
+      }
+    },
+    "button": {
+      "wake": {
+        "name": "Turn the screen on"
+      },
+      "clear": {
+        "name": "Clear the notifications"
+      },
+      "restart": {
+        "name": "Restart"
+      }
     }
   }
 }
