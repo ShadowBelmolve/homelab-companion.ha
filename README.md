@@ -1,6 +1,6 @@
-# redondo.ha
+# homelab-companion.ha
 
-Home Assistant side of the Home Lab Companion, the round touch display: the custom integration Home Lab Companion, domain `homelab_companion` (version 0.1.0). "redondo" is only the nickname of one such device: it stays in this repository's name, in the dev container and virtual machine names below and in the default host `redondo.local`.
+Home Assistant side of the Home Lab Companion, the round touch display: the custom integration Home Lab Companion, domain `homelab_companion` (version 0.1.0). "redondo" is only the nickname of one such device: it stays in the dev container and virtual machine names below and in the default host `redondo.local`.
 
 Home Assistant connects to the Companion, as it does with ESPHome devices. The Companion listens on TCP port 7010 and knows no server address. The connection is encrypted with a key the two share; nothing crosses the network in clear.
 
