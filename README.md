@@ -111,9 +111,11 @@ The container dials out, so nothing of the Companion needs publishing. `up` prin
 
 Run on 2026-11-13 with Home Assistant 2026.10.4 and version 0.1.0, the entry added through the REST API: a wrong key gave `invalid_auth`, the right key created an entry named after the simulator, its sensor turned on, a `redondo.notify` call returned 200 and the notification showed on the simulator's screen.
 
-Not run with version 0.1.0: a real board (version 0.0.1 reached one in clear, added as `redondo.local` with `--lan`), and an address change on a real board (only the automated test, with two loopback addresses).
+Not run with version 0.1.0: an address change on a real board (only the automated test, with two loopback addresses).
 
-Discovery, run on 2026-11-13 with Home Assistant 2026.10.4 started with `--lan`, the simulator on this PC and its service announced by a python-zeroconf script (the simulator does not announce itself, and no board was on): Home Assistant opened the flow by itself with the Companion's name in the card, a wrong key gave `invalid_auth`, the right key created the entry named after the Companion with the host `<name>.local`, its sensor turned on, and a `redondo.notify` returned 200 and showed on the simulator's screen. Not run against a board's own announcement.
+Discovery, run on 2026-11-13 with Home Assistant 2026.10.4 started with `--lan`, the simulator on this PC and its service announced by a python-zeroconf script (the simulator does not announce itself, and no board was on): Home Assistant opened the flow by itself with the Companion's name in the card, a wrong key gave `invalid_auth`, the right key created the entry named after the Companion with the host `<name>.local`, its sensor turned on, and a `redondo.notify` returned 200 and showed on the simulator's screen.
+
+A real board, run on 2026-11-13 with Home Assistant 2026.10.4 started with `--lan` and version 0.1.0 (the board built with a name and a key, no script announcing for it): Home Assistant discovered the board by itself from the board's own announcement, the form asking only for the key; a wrong key gave `invalid_auth` and the right key on the same form created the entry named after the board; `binary_sensor.<name>_connectivity` was on and still on some minutes later; a `redondo.notify` returned 200; a tcpdump of the board's port 7010 during a notification held none of its title, body or kind words (one 73-byte payload: 2 length bytes, 55 of text, 16 of tag). What the board's screen showed was not recorded.
 
 ### Home Assistant OS in a virtual machine
 
