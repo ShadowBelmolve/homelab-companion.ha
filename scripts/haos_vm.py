@@ -37,9 +37,9 @@ from pathlib import Path
 import ha_dev
 
 REPO = Path(__file__).resolve().parent.parent
-DIR = Path.home() / "vms" / "redondo-ha"
-UNIT = "redondo-haos-vm.service"
-TABLE = "redondo_haos_vm"
+DIR = Path.home() / "vms" / "homelab-companion-ha"
+UNIT = "homelab-companion-haos-vm.service"
+TABLE = "homelab_companion_haos_vm"
 # Host ports -> guest: 80 (the UI of a fresh install), 8123 (its legacy port).
 UI_PORT, LEGACY_PORT = 18180, 18223
 BASE = f"http://127.0.0.1:{UI_PORT}"

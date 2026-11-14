@@ -1,6 +1,6 @@
 # homelab-companion.ha
 
-Home Assistant side of the Home Lab Companion, the round touch display: the custom integration Home Lab Companion, domain `homelab_companion` (version 0.1.0). "redondo" is only the nickname of one such device: it stays in the dev container and virtual machine names below and in the default host `redondo.local`.
+Home Assistant side of the Home Lab Companion, the round touch display: the custom integration Home Lab Companion, domain `homelab_companion` (version 0.1.0). "redondo" is only the nickname of one such device: it stays only in the default host `redondo.local`, the name of a board built without `REDONDO_NAME`.
 
 Home Assistant connects to the Companion, as it does with ESPHome devices. The Companion listens on TCP port 7010 and knows no server address. The connection is encrypted with a key the two share; nothing crosses the network in clear.
 
@@ -89,7 +89,7 @@ docker run --rm -v "$PWD":/github/workspace ghcr.io/home-assistant/hassfest
 `scripts/ha_dev.py` (copied from the homelab `haos` repo) runs Home Assistant Core in a container, with `custom_components/` mounted read-only and the image of the Home Assistant version in the venv, the one pytest uses.
 
 ```bash
-uv run scripts/ha_dev.py up        # container redondo-ha-dev, http://<this host>:28133, user dev / password dev
+uv run scripts/ha_dev.py up        # container homelab-companion-ha-dev, http://<this host>:28133, user dev / password dev
 uv run scripts/ha_dev.py restart   # after editing the integration (Python loads once)
 uv run scripts/ha_dev.py logs      # dev/configuration.yaml turns debug logs on for custom_components
 uv run scripts/ha_dev.py token     # an access token for the REST API
@@ -98,7 +98,7 @@ uv run scripts/ha_dev.py down      # removes the container and its config volume
 
 `--lan` on every command puts the container on this PC's network instead of the Docker bridge: the UI is then on port 8123 and mDNS works, so a real board can be added as `redondo.local` (behind the bridge the name does not resolve). That Home Assistant sees the devices of the LAN.
 
-`uv run pytest -m live` is the automated check (about 30 s; the default `pytest` run skips it): a separate container `redondo-ha-live-test` on port 28134, the config flow through the REST API with a random key, a TCP server on this PC that answers the handshake as the Companion, the sensor `on`, a `homelab_companion.notify` call, the exact line received once decrypted and its text absent from the bytes on the wire; the container is removed afterwards.
+`uv run pytest -m live` is the automated check (about 30 s; the default `pytest` run skips it): a separate container `homelab-companion-ha-live-test` on port 28134, the config flow through the REST API with a random key, a TCP server on this PC that answers the handshake as the Companion, the sensor `on`, a `homelab_companion.notify` call, the exact line received once decrypted and its text absent from the bytes on the wire; the container is removed afterwards.
 
 ### With the Companion's simulator
 
@@ -128,15 +128,15 @@ uv run scripts/haos_vm.py start     # downloads HAOS once, boots, waits for Home
 uv run scripts/haos_vm.py install   # copies the integration in, restarts Core, onboards, adds the Companion (needs its key)
 uv run scripts/haos_vm.py token     # an access token for the REST API
 uv run scripts/haos_vm.py stop      # stops the VM; its disk stays and `start` boots it again
-uv run scripts/haos_vm.py destroy   # stops it and deletes ~/vms/redondo-ha
+uv run scripts/haos_vm.py destroy   # stops it and deletes ~/vms/homelab-companion-ha
 ```
 
-- The VM is the user unit `redondo-haos-vm` (2 vCPUs, 4 GiB), its files in `~/vms/redondo-ha`. UI: `http://<this host>:18180` (user `dev`, password `dev` after `install`); 18223 is the legacy port 8123. The first boot downloads Home Assistant Core: 5 to 10 minutes.
+- The VM is the user unit `homelab-companion-haos-vm` (2 vCPUs, 4 GiB), its files in `~/vms/homelab-companion-ha`. UI: `http://<this host>:18180` (user `dev`, password `dev` after `install`); 18223 is the legacy port 8123. The first boot downloads Home Assistant Core: 5 to 10 minutes.
 - The guest sees this PC as `10.0.2.2`. `install` adds the Companion at `10.0.2.2:7010`, the simulator (`make sim APP=companion` in the firmware repo); `--companion-port` picks another port. It needs the Companion's key: `--key <COMPANION_KEY>`, or the variable `COMPANION_KEY`; without one it stops before touching the VM. Run `install` again after editing the integration.
-- The guest cannot reach the LAN: the nftables table `inet redondo_haos_vm` drops what the VM sends to private networks, so this Home Assistant never talks to real devices. `stop` removes the table.
+- The guest cannot reach the LAN: the nftables table `inet homelab_companion_haos_vm` drops what the VM sends to private networks, so this Home Assistant never talks to real devices. `stop` removes the table.
 - A real board: pass its IPv4 address to both commands, `start --companion <ipv4>` (opens the block for that address and the Companion's port only; on a running VM it just reloads the rule) and `install --companion <ipv4>` (adds it). A plain `start` leaves the rule as it is; `start --companion 10.0.2.2` closes it again. A name such as `redondo.local` does not resolve in the guest (mDNS does not reach it) and is refused.
 - `install` retries `ha core restart` for up to two minutes: right after a boot the Supervisor refuses it.
-- `install` types the integration into the guest's serial console (root, no password) as a base64 tar. To look around by hand: `socat - UNIX-CONNECT:$HOME/vms/redondo-ha/serial.sock`; the console's output is also in `~/vms/redondo-ha/serial.log`.
+- `install` types the integration into the guest's serial console (root, no password) as a base64 tar. To look around by hand: `socat - UNIX-CONNECT:$HOME/vms/homelab-companion-ha/serial.sock`; the console's output is also in `~/vms/homelab-companion-ha/serial.log`.
 - The image is the newest stable HAOS release that has one for virtual machines (`haos_ova-*.qcow2.xz`); a release can lack it, as 18.5 did.
 - Run on 2026-11-13 with HAOS 18.4 and version 0.0.1, in clear: against the simulator (the sensor on, a `homelab_companion.notify` call shown, the sensor off when the simulator closed) and against a real board (the sensor on, a `homelab_companion.notify` call returned 200, the screen not recorded). Not run with version 0.1.0 and a key.
 - Cut down from the homelab `haos` repo's `scripts/start-vm.sh`, with its own unit, ports and table, so both VMs can run at once.

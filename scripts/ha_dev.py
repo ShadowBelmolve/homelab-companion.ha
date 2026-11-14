@@ -26,8 +26,8 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-LABEL = "redondo.ha"
-LIVE_TEST_NAME = "redondo-ha-live-test"
+LABEL = "homelab-companion.ha"
+LIVE_TEST_NAME = "homelab-companion-ha-live-test"
 USER = {"name": "Dev", "username": "dev", "password": "dev", "language": "en"}
 
 
@@ -152,7 +152,7 @@ def down(name):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["up", "restart", "logs", "token", "down"])
-    p.add_argument("--name", default="redondo-ha-dev")
+    p.add_argument("--name", default="homelab-companion-ha-dev")
     p.add_argument("--port", type=int, default=28133)
     p.add_argument("--lan", action="store_true", help="on this PC's network, for a real board by its mDNS name; the port is then 8123")
     a = p.parse_args(argv)
