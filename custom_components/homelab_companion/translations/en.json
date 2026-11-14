@@ -61,5 +61,45 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "rssi": {
+        "name": "Wi-Fi signal"
+      },
+      "normal": {
+        "name": "Normal queue"
+      },
+      "urgent": {
+        "name": "Urgent queue"
+      },
+      "screen": {
+        "name": "Screen",
+        "state": {
+          "on": "On",
+          "dim": "Dimmed",
+          "off": "Off"
+        }
+      },
+      "heap": {
+        "name": "Free memory"
+      },
+      "last_boot": {
+        "name": "Last boot"
+      }
+    },
+    "event": {
+      "notification": {
+        "name": "Notification",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "dismissed": "Dismissed",
+              "expired": "Expired"
+            }
+          }
+        }
+      }
+    }
   }
 }

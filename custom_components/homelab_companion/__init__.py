@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 
 import voluptuous as vol
 from homeassistant.components import zeroconf
@@ -10,8 +11,10 @@ from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import dt as dt_util
 from zeroconf import AddressResolver, IPVersion
 
 from . import protocol
@@ -21,12 +24,15 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "homelab_companion"
 DEFAULT_PORT = 7010
-PLATFORMS = [Platform.BINARY_SENSOR]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.EVENT, Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 CONF_KEY = "key"
 RETRY_SECONDS = 5
 MDNS_TIMEOUT_MS = 3000
+# The boot time is the clock minus the uptime the Companion reports: it
+# moves a little with every state, and only a move above this is a new boot.
+BOOT_JITTER = timedelta(seconds=10)
 
 NOTIFY_SCHEMA = vol.Schema(
     {
@@ -43,8 +49,13 @@ NOTIFY_SCHEMA = vol.Schema(
 
 
 def signal(entry_id: str) -> str:
-    """The dispatcher signal sent when an entry's connection opens or ends."""
+    """The dispatcher signal sent when an entry's connection opens or ends, or its Companion's state arrives."""
     return f"{DOMAIN}_connected_{entry_id}"
+
+
+def event_signal(entry_id: str) -> str:
+    """The dispatcher signal that carries an `event` message of an entry's Companion."""
+    return f"{DOMAIN}_event_{entry_id}"
 
 
 async def address(hass: HomeAssistant, host: str) -> str:
@@ -67,10 +78,35 @@ class Link:
         self.hass = hass
         self.entry = entry
         self.session: Session | None = None
+        # The Companion's last `state` message; None until one arrives on this connection.
+        self.state: dict | None = None
+        # When the Companion started, from the uptime in its state.
+        self.boot: datetime | None = None
 
     def _set(self, session: Session | None) -> None:
         self.session = session
+        self.state = None
         async_dispatcher_send(self.hass, signal(self.entry.entry_id))
+
+    def _receive(self, line: bytes) -> None:
+        """One line of the Companion, to what shows it."""
+        message = protocol.decode(line)
+        if message is None:
+            _LOGGER.debug("%s: a line that is no message dropped", self.entry.title)
+        elif message["t"] == "state":
+            self.state = message
+            if type(uptime := message.get("uptime_ms")) is int:
+                boot = dt_util.utcnow() - timedelta(milliseconds=uptime)
+                if self.boot is None or abs(boot - self.boot) > BOOT_JITTER:
+                    self.boot = boot
+            if isinstance(version := message.get("version"), str):
+                # A no-op when the version did not change.
+                dr.async_get(self.hass).async_get_or_create(
+                    config_entry_id=self.entry.entry_id, identifiers={(DOMAIN, self.entry.entry_id)}, sw_version=version
+                )
+            async_dispatcher_send(self.hass, signal(self.entry.entry_id))
+        elif message["t"] == "event":
+            async_dispatcher_send(self.hass, event_signal(self.entry.entry_id), message)
 
     async def run(self) -> None:
         host, port = self.entry.data[CONF_HOST], self.entry.data[CONF_PORT]
@@ -96,10 +132,14 @@ class Link:
                 problem = None
                 self._set(session)
                 try:
-                    # The Companion sends nothing more: this ends when it
-                    # closes (EOF) or vanishes (the keepalive's error).
-                    while await session.reader.read(1024):
-                        pass
+                    # Ends when the Companion closes (EOF) or vanishes (the
+                    # keepalive's error).
+                    async for line in session.lines():
+                        try:
+                            self._receive(line)
+                        # Whatever a line holds, this task lives: nothing else would reconnect.
+                        except Exception:
+                            _LOGGER.exception("%s: a line dropped", self.entry.title)
                 except OSError as err:
                     _LOGGER.debug("%s:%s: %s", host, port, err)
                 finally:

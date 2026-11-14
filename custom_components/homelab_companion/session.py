@@ -9,6 +9,7 @@ repo: apps/companion/SPEC.md.
 """
 
 import asyncio
+from collections.abc import AsyncIterator
 import base64
 import binascii
 import socket
@@ -16,7 +17,7 @@ import struct
 
 from noise.connection import NoiseConnection
 
-from .protocol import PROLOGUE
+from .protocol import LINE_MAX, PROLOGUE
 
 PATTERN = b"Noise_NNpsk0_25519_ChaChaPoly_SHA256"
 # The most bytes of a message after its length; the Companion ends the
@@ -62,6 +63,32 @@ class Session:
             message = self._noise.encrypt(text[at : at + TEXT_MAX])
             self.writer.write(struct.pack(">H", len(message)) + message)
         await self.writer.drain()
+
+    async def lines(self) -> AsyncIterator[bytes]:
+        """The lines the Companion sends, decrypted, until the connection ends.
+
+        It ends when the Companion closes, or sends what is not a message of
+        this session. OSError: it vanished (the keepalive noticed).
+        """
+        text = b""
+        while True:
+            try:
+                (length,) = struct.unpack(">H", await self.reader.readexactly(2))
+                if length > MESSAGE_MAX:
+                    return
+                text += bytes(self._noise.decrypt(await self.reader.readexactly(length)))
+            except asyncio.IncompleteReadError:
+                return
+            except OSError:
+                raise
+            except Exception:  # noqa: BLE001 - the cipher refused it: not this session's message
+                return
+            *whole, text = text.split(b"\n")
+            for line in whole:
+                yield line
+            # A line with no end is not kept: what follows it will not decode.
+            if len(text) > LINE_MAX:
+                text = b""
 
 
 async def connect(host: str, port: int, key: bytes) -> Session:

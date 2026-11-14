@@ -25,6 +25,9 @@ Home Assistant connects to the Companion, as it does with ESPHome devices. The C
 A host ending in `.local` is resolved at every try through Home Assistant's own mDNS (its `zeroconf` integration), then through the system resolver if mDNS gives no address; Home Assistant's container has no mDNS in its system resolver. So a Companion added by name is found again after its address changes, with the same device, entity and `config_entry_id`. One added by IPv4 address is not: add it again with the new address, which moves its entry.
 
 - **`binary_sensor.<name>_connectivity`** (`<name>` is the Companion's, with `-` as `_`): on while the encrypted connection is open, that is from the end of the handshake. It goes off at once when the Companion closes it, and within 30 s when the Companion vanishes (TCP keepalive: idle 10 s, then 4 probes 5 s apart; `TCP_USER_TIMEOUT` of 30 s for a line sent and never acknowledged).
+- **Sensors** from the `state` message the Companion sends when it connects, when something in it changes and every 30 s (`sensor.py`, one entry of `SENSORS` each): `sensor.<name>_wi_fi_signal` (dBm, diagnostic), `sensor.<name>_normal_queue` and `sensor.<name>_urgent_queue` (notifications waiting, the one on screen included), `sensor.<name>_screen` (`on`, `dim`, `off`), `sensor.<name>_free_memory` (bytes of the internal heap, diagnostic) and `sensor.<name>_last_boot` (a timestamp from the uptime, which only moves when it changes by more than 10 s; diagnostic). They are unavailable while the connection is closed and until the first state arrives. A field a firmware does not send, or sends as something this version does not know, shows as unknown.
+- **The firmware version** is the device's software version (the build's `git describe`).
+- **`event.<name>_notification`** (`event.py`): `dismissed` when a notification left the screen by a tap, `expired` when its time ended, with the attributes `kind` and `title`.
 - **Action `homelab_companion.notify`**: sends one notification. It fails when that Companion is not connected; nothing is queued.
 
 | Field | Type | Meaning |
@@ -63,7 +66,7 @@ Inside the session (`custom_components/homelab_companion/protocol.py`, which imp
 {"t":"notify","kind":"deal","urgent":true,"ms":60000,"title":"SSD NVMe 2 TB","body":"R$ 599 na Kabum, 32% abaixo do preço pedido"}
 ```
 
-`notify` is the one message the integration sends so far; it reads nothing the Companion sends yet. The action's `seconds` field (1 to 4,294,967) becomes `ms`. The title is cut at 80 characters and the body at 200, where the Companion cuts them; a call whose line is still over 1024 bytes (only with many characters of 4 bytes) is refused. The Companion shows Latin-1 text only. The full rules live in the firmware repo: `apps/companion/SPEC.md` and `ai-context/decisions/companion-protocol-2-screen-off.md`.
+`notify` is the one message the integration sends so far. It reads the Companion's `state` and `event` lines (`Session.lines`, `Link._receive`); a line that is no message, or a message it does not know, is skipped. The action's `seconds` field (1 to 4,294,967) becomes `ms`. The title is cut at 80 characters and the body at 200, where the Companion cuts them; a call whose line is still over 1024 bytes (only with many characters of 4 bytes) is refused. The Companion shows Latin-1 text only. The full rules live in the firmware repo: `apps/companion/SPEC.md` and `ai-context/decisions/companion-protocol-2-screen-off.md`.
 
 ## Install on Home Assistant OS
 
@@ -79,7 +82,7 @@ uv run pytest
 docker run --rm -v "$PWD":/github/workspace ghcr.io/home-assistant/hassfest
 ```
 
-- `pytest` runs a real in-process Home Assistant (`pytest-homeassistant-custom-component`, which pins the Home Assistant version) against a fake Companion: a TCP server on loopback that answers the handshake as the firmware does (`tests/components/homelab_companion/test_init.py`, 21 tests; `test_protocol.py` has 4 more for `protocol.py` alone; the discovery tests hand the flow what Home Assistant's zeroconf would). Tests that open sockets take the plugin's `socket_enabled` fixture. `noiseprotocol` is a dev dependency too: the plugin does not install an integration's requirements.
+- `pytest` runs a real in-process Home Assistant (`pytest-homeassistant-custom-component`, which pins the Home Assistant version) against a fake Companion: a TCP server on loopback that answers the handshake as the firmware does (`tests/components/homelab_companion/test_init.py`, 26 tests; `test_protocol.py` has 4 more for `protocol.py` alone; the discovery tests hand the flow what Home Assistant's zeroconf would). Tests that open sockets take the plugin's `socket_enabled` fixture. `noiseprotocol` is a dev dependency too: the plugin does not install an integration's requirements.
 - `tests/components/conftest.py` imports `custom_components` first; without it Home Assistant loads the plugin's own `custom_components` and reports `Integration 'homelab_companion' not found`.
 - hassfest must end with `Invalid integrations: 0`.
 - Without Home Assistant, the firmware repo's `make notify [HOST=<host>]` sends lines to a Companion or to its simulator, with the `COMPANION_KEY` of its `local.mk`.
@@ -119,7 +122,7 @@ A real board, run on 2026-11-13 with Home Assistant 2026.10.4 started with `--la
 
 The runs above were made while the integration was named `redondo` (domain, action, service `_redondo._tcp`, prologue `redondo/1`). After the rename to Home Lab Companion: `uv run pytest` (21 tests), `uv run pytest -m live`, hassfest, and a fresh `--lan` Home Assistant 2026.10.4 container discovered a board with the renamed firmware (a `homelab_companion` flow at step `discovered`, the board's name). Not run again after the rename: the key, the sensor, a notification, the capture, HAOS.
 
-Version 0.2.0 (protocol 2), 2026-11-14: `uv run pytest` (25 tests) and `uv run pytest -m live`. Not run with it: the simulator, a real board, HAOS.
+Version 0.2.0 (protocol 2), 2026-11-14: `uv run pytest` (30 tests) and `uv run pytest -m live`. Not run with it: the simulator, a real board, HAOS.
 
 ### Home Assistant OS in a virtual machine
 

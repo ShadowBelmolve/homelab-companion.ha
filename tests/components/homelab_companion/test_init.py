@@ -3,6 +3,7 @@ import base64
 import json
 import socket
 import struct
+from datetime import datetime
 from ipaddress import ip_address
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from noise.connection import NoiseConnection
@@ -44,6 +46,12 @@ class Peer:
                 self.text += self.noise.decrypt(await self.reader.readexactly(length))
         line, _, self.text = self.text.partition(b"\n")
         return line + b"\n"
+
+    def send(self, *messages: dict | bytes) -> None:
+        """Sends the Companion's lines (a dict as its JSON), all in one Noise message."""
+        text = b"".join(m if isinstance(m, bytes) else json.dumps(m).encode() + b"\n" for m in messages)
+        sealed = self.noise.encrypt(text)
+        self.writer.write(struct.pack(">H", len(sealed)) + sealed)
 
 
 class FakeCompanion:
@@ -317,10 +325,12 @@ async def test_a_host_that_cannot_be_a_name_is_tried_again(hass: HomeAssistant) 
         patch("custom_components.homelab_companion.RETRY_SECONDS", 0.05),
         patch("custom_components.homelab_companion.session.asyncio.open_connection", side_effect=error) as connect,
     ):
-        _, sensor = await setup(hass, 7010, host="a..b")
+        entry, sensor = await setup(hass, 7010, host="a..b")
         await asyncio.sleep(0.2)
-    assert hass.states.get(sensor).state == STATE_OFF
-    assert connect.call_count > 1, "the task died on the first try"
+        assert hass.states.get(sensor).state == STATE_OFF
+        assert connect.call_count > 1, "the task died on the first try"
+        # Before the patches end: a later try would reach the real resolver.
+        await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_a_local_name_is_resolved_by_mdns_at_every_try(hass: HomeAssistant, companion: FakeCompanion) -> None:
@@ -421,3 +431,150 @@ async def test_unload_closes_the_connection(hass: HomeAssistant, companion: Fake
     assert await asyncio.wait_for(reader.reader.read(), 2) == b""  # EOF: the socket closed
     with pytest.raises(HomeAssistantError, match="not connected"):
         await notify(hass, entry)
+
+
+STATE = {"t": "state", "rssi": -61, "normal": 2, "urgent": 1, "screen": "dim", "heap": 126408, "uptime_ms": 60_000, "version": "70b9728"}
+
+
+def entity_id(hass: HomeAssistant, entry: MockConfigEntry, platform: str, key: str) -> str:
+    return er.async_get(hass).async_get_entity_id(platform, DOMAIN, f"{entry.entry_id}_{key}")
+
+
+async def value(hass: HomeAssistant, entry: MockConfigEntry, key: str, want: str, platform: str = "sensor") -> None:
+    """Waits for the entity of `key` to show `want`."""
+    entity = entity_id(hass, entry, platform, key)
+    try:
+        async with asyncio.timeout(2):
+            while hass.states.get(entity).state != want:
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        pytest.fail(f"{entity} is {hass.states.get(entity).state!r}, not {want!r}")
+
+
+async def test_sensors_show_the_state_the_companion_sends(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    entry, connected = await setup(hass, companion.port)
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+    # Connected, but it said nothing yet.
+    for key in ("rssi", "normal", "urgent", "screen", "heap", "last_boot"):
+        assert hass.states.get(entity_id(hass, entry, "sensor", key)).state == STATE_UNAVAILABLE, key
+
+    peer.send(STATE)
+    for key, want in (("rssi", "-61"), ("normal", "2"), ("urgent", "1"), ("screen", "dim"), ("heap", "126408")):
+        await value(hass, entry, key, want)
+    rssi = hass.states.get(entity_id(hass, entry, "sensor", "rssi"))
+    assert rssi.attributes["unit_of_measurement"] == "dBm"
+    assert rssi.name == "mesa Wi-Fi signal"
+    registry = er.async_get(hass)
+    assert registry.async_get(rssi.entity_id).entity_category == "diagnostic"
+    assert registry.async_get(entity_id(hass, entry, "sensor", "normal")).entity_category is None
+    assert hass.states.get(connected).name == "mesa Connectivity", "the first entity keeps its name and id"
+
+    # The whole state replaces the last one.
+    peer.send({**STATE, "normal": 0, "urgent": 0, "screen": "off", "rssi": None})
+    await value(hass, entry, "screen", "off")
+    await value(hass, entry, "normal", "0")
+    await value(hass, entry, "rssi", "unknown")
+
+    # Gone: what it reported is not known any more; the connection sensor says why.
+    peer.writer.close()
+    await until(hass, connected, STATE_OFF)
+    await value(hass, entry, "screen", STATE_UNAVAILABLE)
+    # Back: unavailable until it speaks again.
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+    assert hass.states.get(entity_id(hass, entry, "sensor", "screen")).state == STATE_UNAVAILABLE
+    peer.send(STATE)
+    await value(hass, entry, "screen", "dim")
+
+
+async def test_a_state_of_another_firmware_does_not_break_the_reading(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    entry, connected = await setup(hass, companion.port)
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+    # Older: fields missing. Newer: fields and values this version does not know.
+    peer.send(
+        b"not json\n",
+        b"[1]\n",
+        {"t": "dance", "steps": 3},
+        {"t": "state", "normal": 4, "screen": "blinking", "rssi": "strong", "heap": True, "later": {"x": [1]}},
+    )
+    await value(hass, entry, "normal", "4")
+    for key in ("rssi", "urgent", "screen", "heap", "last_boot"):
+        assert hass.states.get(entity_id(hass, entry, "sensor", key)).state == "unknown", key
+    # A state that cannot be shown (an uptime no clock holds) is dropped, not the connection.
+    peer.send({**STATE, "normal": 5, "uptime_ms": 2**63})
+    # Nor is a line with no end kept: past the limit it is forgotten, so what
+    # follows it is a line of its own.
+    peer.send(b"x" * 600)
+    peer.send(b"x" * 600)
+    peer.send({**STATE, "normal": 6})
+    await value(hass, entry, "normal", "6")
+    # Still reading, and several lines in one message or one line in two are the same.
+    half = json.dumps(STATE).encode() + b"\n"
+    peer.send(half[:20])
+    peer.send(half[20:], {**STATE, "normal": 7})
+    await value(hass, entry, "normal", "7")
+    assert hass.states.get(connected).state == STATE_ON
+
+
+async def test_the_last_boot_does_not_move_with_every_state(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    entry, connected = await setup(hass, companion.port)
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+
+    def clock(text: str):
+        # Only what the integration reads: a frozen clock would stop the event loop's own timeouts.
+        return patch("custom_components.homelab_companion.dt_util.utcnow", return_value=datetime.fromisoformat(text))
+
+    with clock("2026-11-14 12:00:00+00:00"):
+        peer.send(STATE)
+        await value(hass, entry, "last_boot", "2026-11-14T11:59:00+00:00")
+    # Half a minute later the uptime says 2 s less than the clock: the same boot.
+    with clock("2026-11-14 12:00:30+00:00"):
+        peer.send({**STATE, "uptime_ms": 88_000, "normal": 5})
+        await value(hass, entry, "normal", "5")
+    assert hass.states.get(entity_id(hass, entry, "sensor", "last_boot")).state == "2026-11-14T11:59:00+00:00"
+    # It restarted.
+    with clock("2026-11-14 12:10:00+00:00"):
+        peer.send({**STATE, "uptime_ms": 5_000})
+        await value(hass, entry, "last_boot", "2026-11-14T12:09:55+00:00")
+
+
+async def test_the_device_shows_the_firmware_version(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    entry, connected = await setup(hass, companion.port)
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+    device = lambda: dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)[0]  # noqa: E731
+    assert device().sw_version is None
+    peer.send(STATE)
+    await value(hass, entry, "normal", "2")
+    assert (device().sw_version, device().name) == ("70b9728", "mesa")
+    peer.send({**STATE, "version": "e295594", "normal": 3})
+    await value(hass, entry, "normal", "3")
+    assert device().sw_version == "e295594"
+    assert len(dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)) == 1
+
+
+async def test_the_event_entity_tells_how_a_notification_left(hass: HomeAssistant, companion: FakeCompanion) -> None:
+    entry, connected = await setup(hass, companion.port)
+    peer = await companion.accepted()
+    await until(hass, connected, STATE_ON)
+    entity = entity_id(hass, entry, "event", "notification")
+    # Before any state: the Companion may send an event first.
+    await value(hass, entry, "notification", "unknown", platform="event")
+
+    async def fired(event_type: str, **attributes) -> None:
+        async with asyncio.timeout(2):
+            while (state := hass.states.get(entity)).attributes.get("event_type") != event_type:
+                await asyncio.sleep(0.01)
+        assert {key: state.attributes[key] for key in attributes} == attributes
+
+    peer.send({"t": "event", "event": "dismissed", "kind": "deal", "title": "SSD NVMe 2 TB"})
+    await fired("dismissed", kind="deal", title="SSD NVMe 2 TB")
+    first = hass.states.get(entity).state
+    # One this version does not know is not an event; the next known one is.
+    peer.send({"t": "event", "event": "exploded", "kind": "deal", "title": "x"}, {"t": "event", "event": "expired", "kind": "email", "title": "3"})
+    await fired("expired", kind="email", title="3")
+    assert hass.states.get(entity).state != first, "each event is a new moment"
+    assert hass.states.get(entity).attributes["event_types"] == ["dismissed", "expired"]
